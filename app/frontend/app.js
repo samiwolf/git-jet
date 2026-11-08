@@ -168,10 +168,65 @@ function errorText(error) {
 
 /* ------------------------------------------------------------ empty state */
 
+const RECENT_KEY = "gitjet.recentRepos";
+const RECENT_LIMIT = 10;
+
+function loadRecent() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY));
+    if (Array.isArray(raw)) {
+      return raw.filter((entry) => entry && typeof entry.root === "string");
+    }
+  } catch { /* ignore corrupt value */ }
+  return [];
+}
+
+/* Keep at most RECENT_LIMIT entries, newest first. */
+function recordRecent(root, name) {
+  const rest = loadRecent().filter((entry) => entry.root !== root);
+  rest.unshift({ root, name, lastOpened: Date.now() });
+  localStorage.setItem(RECENT_KEY, JSON.stringify(rest.slice(0, RECENT_LIMIT)));
+}
+
+function forgetRecent(root) {
+  localStorage.setItem(RECENT_KEY, JSON.stringify(loadRecent().filter((entry) => entry.root !== root)));
+}
+
+function recentName(entry) {
+  return entry.name || entry.root.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+}
+
+function renderRecent() {
+  const wrap = $("recent-repos");
+  const list = $("recent-list");
+  const entries = loadRecent();
+  list.replaceChildren(...entries.map((entry) => {
+    const row = el("button", "recent-item");
+    row.type = "button";
+    row.title = entry.root;
+    row.appendChild(el("span", "recent-name", recentName(entry)));
+    row.appendChild(el("span", "recent-path", entry.root));
+
+    const forget = el("span", "recent-forget", "✕");
+    forget.title = "Remove from this list";
+    forget.addEventListener("click", (event) => {
+      event.stopPropagation();
+      forgetRecent(entry.root);
+      renderRecent();
+    });
+    row.appendChild(forget);
+
+    row.addEventListener("click", () => openRepository(entry.root));
+    return row;
+  }));
+  if (entries.length) show(wrap); else hide(wrap);
+}
+
 function enterApp(root, name) {
   state.root = root;
   state.repoName = name || root.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   localStorage.setItem("gitjet.lastRoot", JSON.stringify({ root, name }));
+  recordRecent(root, state.repoName);
   const box = $("boot-error");
   box.textContent = "";
   $("status-repo").textContent = state.repoName;
@@ -183,12 +238,18 @@ function enterApp(root, name) {
 function leaveApp(message) {
   state.root = null;
   localStorage.removeItem("gitjet.lastRoot");
+  renderRecent();
   hide($("app"));
   show($("empty-state"));
   const error = $("empty-error");
   if (message) {
     error.textContent = message;
     show(error);
+  } else {
+    /* An old failure (e.g. a previous open attempt) must not linger once
+     * the user comes back to this screen without new news. */
+    error.textContent = "";
+    hide(error);
   }
   $("status-repo").textContent = "";
 }
@@ -198,6 +259,9 @@ async function openRepository(path) {
     const info = await invoke("open_repository", { path });
     enterApp(info.root, info.name);
   } catch (error) {
+    /* A repository that no longer opens has no business staying in the
+     * recents list; leaveApp re-renders the (updated) list. */
+    forgetRecent(path);
     leaveApp(
       errorText(error).includes("Not a Git repository")
         ? `"${path}" is not a Git repository.`
@@ -2212,6 +2276,8 @@ function boot() {
     if (state.root) refreshStatus().catch(() => {});
   });
 
+
+  renderRecent();
 
   const last = localStorage.getItem("gitjet.lastRoot");
   if (last) {

@@ -1,6 +1,6 @@
 [package]
 name = "git-jet-app"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "A JetBrains-style Git tool: Tauri desktop application"
 authors = ["Git Jet contributors <git-jet@example.com>"]

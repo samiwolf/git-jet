@@ -9,12 +9,42 @@ pub mod core;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+/// Windows `CREATE_NO_WINDOW` flag: keeps console processes spawned from the
+/// GUI shell from flashing a console window per git invocation.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub use core::{
     argument_completions, parse_request, ArgumentCompletion, Branch, BranchInfo, ChangedFile,
     CmdOutput, Commit, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient, GitExecutor,
     GitRequest, Head, LogFilter, Rendered, RenderedSection, RollbackLevel, StashAction,
     StashEntry, StatusEntry, StatusReport, TagEntry,
 };
+
+/// Builds a `git` invocation with the shared arguments every command uses.
+///
+/// Arguments are passed verbatim (never through a shell), so paths and commit
+/// messages containing spaces or quotes are safe.
+fn git_command(root: &str) -> Command {
+    let mut command = Command::new("git");
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .arg("-C")
+        .arg(root)
+        .arg("--no-pager")
+        .arg("-c")
+        .arg("color.ui=false")
+        .arg("-c")
+        .arg("core.quotepath=false")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    command
+}
 
 /// Runs `git` in a directory using the host operating system.
 ///
@@ -25,18 +55,8 @@ pub struct StdExecutor;
 
 impl GitExecutor for StdExecutor {
     fn exec(&mut self, root: &str, args: &[String]) -> Result<CmdOutput, String> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .arg("--no-pager")
-            .arg("-c")
-            .arg("color.ui=false")
-            .arg("-c")
-            .arg("core.quotepath=false")
+        let output = git_command(root)
             .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("GIT_OPTIONAL_LOCKS", "0")
             .output()
             .map_err(|error| error.to_string())?;
         Ok(CmdOutput {
@@ -52,18 +72,8 @@ impl GitExecutor for StdExecutor {
         args: &[String],
         stdin: &[u8],
     ) -> Result<CmdOutput, String> {
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .arg("--no-pager")
-            .arg("-c")
-            .arg("color.ui=false")
-            .arg("-c")
-            .arg("core.quotepath=false")
+        let mut child = git_command(root)
             .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -604,3 +604,46 @@ html, body {
 .empty-title { color: var(--muted); margin: 0; }
 .empty-error { color: var(--deleted); font-size: 12px; max-width: 420px; }
 .empty-row { display: flex; gap: 8px; width: 420px; max-width: 90vw; }
+.recent-repos { display: flex; flex-direction: column; width: 420px; max-width: 90vw; }
+.recent-head {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 8px;
+  padding: 0 2px 2px;
+}
+.recent-list { display: flex; flex-direction: column; max-height: 240px; overflow-y: auto; }
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 10px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.recent-item:hover { border-color: var(--accent); background: var(--accent-dim); }
+.recent-item .recent-name { font-weight: 600; flex: none; }
+.recent-item .recent-path {
+  color: var(--muted);
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-item .recent-forget {
+  color: var(--muted);
+  flex: none;
+  padding: 0 2px;
+  border-radius: 3px;
+  visibility: hidden;
+}
+.recent-item:hover .recent-forget { visibility: visible; }
+.recent-item .recent-forget:hover { color: var(--text); background: var(--border); }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Git Jet",
-  "version": "0.1.0",
-  "identifier": "com.gitjet.app",
+  "version": "0.1.2",
+  "identifier": "com.gitjet.soft",
   "build": {
     "frontendDist": "../frontend"
   },

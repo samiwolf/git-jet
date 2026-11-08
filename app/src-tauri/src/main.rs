@@ -253,13 +253,21 @@ fn map_status(report: &StatusReport) -> StatusDto {
     }
 }
 
-fn with_engine<T>(
-    state: &State<AppState>,
-    run: impl FnOnce(&mut GitClient<StdExecutor>) -> Result<T, String>,
-) -> Result<T, String> {
+async fn with_engine<T, F>(
+    state: &State<'_, AppState>,
+    run: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&mut GitClient<StdExecutor>) -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
     let path = state.path()?;
-    let mut engine = Engine::new(path);
-    run(engine.client())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut engine = Engine::new(path);
+        run(engine.client())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn parse_mode(mode: &str) -> DiffMode {
@@ -271,7 +279,7 @@ fn parse_mode(mode: &str) -> DiffMode {
 }
 
 #[tauri::command]
-fn open_repository(path: Option<String>, state: State<AppState>) -> Result<RepoInfo, String> {
+async fn open_repository(path: Option<String>, state: State<'_, AppState>) -> Result<RepoInfo, String> {
     let picked = match path {
         Some(path) => path,
         None => {
@@ -281,8 +289,12 @@ fn open_repository(path: Option<String>, state: State<AppState>) -> Result<RepoI
     if picked.trim().is_empty() {
         return Err("Empty path.".to_string());
     }
-    let mut engine = Engine::new(picked);
-    let root = engine.client().root()?;
+    let root = tauri::async_runtime::spawn_blocking(move || {
+        let mut engine = Engine::new(picked);
+        engine.client().root()
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     *state.root.lock().map_err(|_| "State poisoned")? = Some(root.clone());
     let name = std::path::Path::new(&root)
         .file_name()
@@ -292,32 +304,33 @@ fn open_repository(path: Option<String>, state: State<AppState>) -> Result<RepoI
 }
 
 #[tauri::command]
-fn current_repository(state: State<AppState>) -> Result<Option<String>, String> {
+async fn current_repository(state: State<'_, AppState>) -> Result<Option<String>, String> {
     Ok(state.root.lock().map_err(|_| "State poisoned")?.clone())
 }
 
 #[tauri::command]
-fn close_repository(state: State<AppState>) -> Result<(), String> {
+async fn close_repository(state: State<'_, AppState>) -> Result<(), String> {
     *state.root.lock().map_err(|_| "State poisoned")? = None;
     Ok(())
 }
 
 #[tauri::command]
-fn get_status(state: State<AppState>) -> Result<StatusDto, String> {
-    with_engine(&state, |client| {
+async fn get_status(state: State<'_, AppState>) -> Result<StatusDto, String> {
+    with_engine(&state, move |client| {
         let report = client.status()?;
         Ok(map_status(&report))
     })
+    .await
 }
 
 #[tauri::command]
-fn get_log(
+async fn get_log(
     count: Option<u32>,
     all: Option<bool>,
     text: Option<String>,
     author: Option<String>,
     path: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<CommitNodeDto>, String> {
     let count = count.unwrap_or(100).max(1).min(500) as usize;
     let all = all.unwrap_or(false);
@@ -330,7 +343,7 @@ fn get_log(
         path,
         branch: None,
     };
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         let nodes = client.log_nodes(count, all, &filter)?;
         Ok(nodes
             .into_iter()
@@ -345,22 +358,24 @@ fn get_log(
             })
             .collect())
     })
+    .await
 }
 
 #[tauri::command]
-fn get_branches(state: State<AppState>) -> Result<BranchesDto, String> {
-    with_engine(&state, |client| {
+async fn get_branches(state: State<'_, AppState>) -> Result<BranchesDto, String> {
+    with_engine(&state, move |client| {
         let (local, remote) = client.list_branches()?;
         Ok(BranchesDto {
             local: local.iter().map(map_branch).collect(),
             remote: remote.iter().map(map_branch).collect(),
         })
     })
+    .await
 }
 
 #[tauri::command]
-fn get_stashes(state: State<AppState>) -> Result<Vec<StashDto>, String> {
-    with_engine(&state, |client| {
+async fn get_stashes(state: State<'_, AppState>) -> Result<Vec<StashDto>, String> {
+    with_engine(&state, move |client| {
         let stashes: Vec<StashEntry> = client.stash_list()?;
         Ok(stashes
             .into_iter()
@@ -371,48 +386,49 @@ fn get_stashes(state: State<AppState>) -> Result<Vec<StashDto>, String> {
             })
             .collect())
     })
+    .await
 }
 
 #[tauri::command]
-fn get_diff(
+async fn get_diff(
     mode: Option<String>,
     paths: Option<Vec<String>>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let mode = parse_mode(mode.as_deref().unwrap_or("unstaged"));
     let paths = paths.unwrap_or_default();
-    with_engine(&state, |client| client.diff_text(&mode, &paths))
+    with_engine(&state, move |client| client.diff_text(&mode, &paths)).await
 }
 
 #[tauri::command]
-fn get_commit(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn get_commit(sha: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let sha = sha.unwrap_or_else(|| "HEAD".to_string());
-    with_engine(&state, |client| client.show_text(&sha))
+    with_engine(&state, move |client| client.show_text(&sha)).await
 }
 
 #[tauri::command]
-fn get_blame(path: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn get_blame(path: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let path = path.ok_or_else(|| "A file path is required.".to_string())?;
-    with_engine(&state, |client| client.blame_text(&path))
+    with_engine(&state, move |client| client.blame_text(&path)).await
 }
 
 #[tauri::command]
-fn stage(paths: Option<Vec<String>>, state: State<AppState>) -> Result<String, String> {
+async fn stage(paths: Option<Vec<String>>, state: State<'_, AppState>) -> Result<String, String> {
     let paths = paths.unwrap_or_default();
-    with_engine(&state, |client| client.stage(&paths))
+    with_engine(&state, move |client| client.stage(&paths)).await
 }
 
 #[tauri::command]
-fn unstage(paths: Option<Vec<String>>, state: State<AppState>) -> Result<String, String> {
+async fn unstage(paths: Option<Vec<String>>, state: State<'_, AppState>) -> Result<String, String> {
     let paths = paths.unwrap_or_default();
-    with_engine(&state, |client| client.unstage(&paths))
+    with_engine(&state, move |client| client.unstage(&paths)).await
 }
 
 #[tauri::command]
-fn rollback_files(
+async fn rollback_files(
     paths: Option<Vec<String>>,
     level: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let paths = paths.unwrap_or_default();
     if paths.is_empty() {
@@ -423,46 +439,47 @@ fn rollback_files(
         Some("untracked") => RollbackLevel::Untracked,
         _ => RollbackLevel::Unstaged,
     };
-    with_engine(&state, |client| client.rollback_files(&paths, level))
+    with_engine(&state, move |client| client.rollback_files(&paths, level)).await
 }
 
 #[tauri::command]
-fn discard_hunk(
+async fn discard_hunk(
     patch: Option<String>,
     staged: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let patch = patch.unwrap_or_default();
     if patch.trim().is_empty() {
         return Err("The hunk patch is empty.".to_string());
     }
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         client.rollback_hunk(&patch, staged.unwrap_or(false))
     })
+    .await
 }
 
 #[tauri::command]
-fn get_worktree_file(file: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn get_worktree_file(file: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let file = file.ok_or_else(|| "A file path is required.".to_string())?;
-    with_engine(&state, |client| client.worktree_file_content(&file))
+    with_engine(&state, move |client| client.worktree_file_content(&file)).await
 }
 
 #[tauri::command]
-fn write_merge_result(
+async fn write_merge_result(
     file: Option<String>,
     content: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let file = file.ok_or_else(|| "A file path is required.".to_string())?;
     let content = content.ok_or_else(|| "The merged content is required.".to_string())?;
-    with_engine(&state, |client| client.write_merge_result(&file, &content))
+    with_engine(&state, move |client| client.write_merge_result(&file, &content)).await
 }
 
 #[tauri::command]
-fn commit(
+async fn commit(
     message: Option<String>,
     amend: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let message = message
         .unwrap_or_default()
@@ -473,100 +490,102 @@ fn commit(
         return Err("Commit message is empty.".to_string());
     }
     let amend = amend.unwrap_or(false);
-    with_engine(&state, |client| client.commit(&message, amend))
+    with_engine(&state, move |client| client.commit(&message, amend)).await
 }
 
 #[tauri::command]
-fn switch_branch(branch: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn switch_branch(branch: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let branch = branch.ok_or_else(|| "A branch name is required.".to_string())?;
     if branch.trim().is_empty() {
         return Err("Branch name is empty.".to_string());
     }
-    with_engine(&state, |client| client.switch(&branch))
+    with_engine(&state, move |client| client.switch(&branch)).await
 }
 
 #[tauri::command]
-fn create_branch(name: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn create_branch(name: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let name = name.ok_or_else(|| "A branch name is required.".to_string())?;
     if name.trim().is_empty() {
         return Err("Branch name is empty.".to_string());
     }
-    with_engine(&state, |client| client.create_branch(name.trim()))
+    with_engine(&state, move |client| client.create_branch(name.trim())).await
 }
 
 #[tauri::command]
-fn stash_push(message: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn stash_push(message: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let message = message
         .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|text| !text.is_empty());
-    with_engine(&state, |client| client.stash_push(message.as_deref()))
+    with_engine(&state, move |client| client.stash_push(message.as_deref())).await
 }
 
 #[tauri::command]
-fn stash_apply(
+async fn stash_apply(
     action: Option<String>,
     selector: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let command = match action.as_deref().unwrap_or("apply") {
         "pop" => "pop",
         "drop" => "drop",
         _ => "apply",
     };
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         client.stash_apply(command, selector.as_deref())
     })
+    .await
 }
 
 #[tauri::command]
-fn fetch(all: Option<bool>, state: State<AppState>) -> Result<String, String> {
+async fn fetch(all: Option<bool>, state: State<'_, AppState>) -> Result<String, String> {
     let all = all.unwrap_or(false);
-    with_engine(&state, |client| client.fetch(all))
+    with_engine(&state, move |client| client.fetch(all)).await
 }
 
 #[tauri::command]
-fn pull(state: State<AppState>) -> Result<String, String> {
-    with_engine(&state, |client| client.pull())
+async fn pull(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.pull()).await
 }
 
 #[tauri::command]
-fn checkout_commit(sha: String, state: State<AppState>) -> Result<String, String> {
+async fn checkout_commit(sha: String, state: State<'_, AppState>) -> Result<String, String> {
     if sha.is_empty() || sha.starts_with('-') {
         return Err(format!("Invalid revision `{sha}`."));
     }
-    with_engine(&state, |client| client.checkout_commit(&sha))
+    with_engine(&state, move |client| client.checkout_commit(&sha)).await
 }
 
 #[tauri::command]
-fn push(state: State<AppState>) -> Result<String, String> {
-    with_engine(&state, |client| client.push())
+async fn push(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.push()).await
 }
 
 #[tauri::command]
-fn pull_options(
+async fn pull_options(
     remote: Option<String>,
     branch: Option<String>,
     ff_only: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         client.pull_with_options(
             remote.as_deref(),
             branch.as_deref(),
             ff_only.unwrap_or(false),
         )
     })
+    .await
 }
 
 #[tauri::command]
-fn push_options(
+async fn push_options(
     remote: Option<String>,
     branch: Option<String>,
     force: Option<bool>,
     set_upstream: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         client.push_with_options(
             remote.as_deref(),
             branch.as_deref(),
@@ -574,98 +593,101 @@ fn push_options(
             set_upstream.unwrap_or(false),
         )
     })
+    .await
 }
 
 #[tauri::command]
-fn outgoing(state: State<AppState>) -> Result<OutgoingDto, String> {
-    with_engine(&state, |client| {
+async fn outgoing(state: State<'_, AppState>) -> Result<OutgoingDto, String> {
+    with_engine(&state, move |client| {
         let (commits, has_upstream) = client.outgoing_commits(200)?;
         Ok(OutgoingDto {
             commits: commits.iter().map(map_commit).collect(),
             has_upstream,
         })
     })
+    .await
 }
 
 #[tauri::command]
-fn merge_branch(
+async fn merge_branch(
     branch: Option<String>,
     no_ff: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let branch = branch.ok_or_else(|| "A branch name is required.".to_string())?;
-    with_engine(&state, |client| client.merge_branch(&branch, no_ff.unwrap_or(false)))
+    with_engine(&state, move |client| client.merge_branch(&branch, no_ff.unwrap_or(false))).await
 }
 
 #[tauri::command]
-fn merge_abort(state: State<AppState>) -> Result<String, String> {
-    with_engine(&state, |client| client.merge_abort())
+async fn merge_abort(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.merge_abort()).await
 }
 
 #[tauri::command]
-fn delete_branch(name: Option<String>, force: Option<bool>, state: State<AppState>) -> Result<String, String> {
+async fn delete_branch(name: Option<String>, force: Option<bool>, state: State<'_, AppState>) -> Result<String, String> {
     let name = name.ok_or_else(|| "A branch name is required.".to_string())?;
-    with_engine(&state, |client| client.delete_branch(&name, force.unwrap_or(false)))
+    with_engine(&state, move |client| client.delete_branch(&name, force.unwrap_or(false))).await
 }
 
 #[tauri::command]
-fn delete_remote_branch(name: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn delete_remote_branch(name: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let name = name.ok_or_else(|| "A remote branch name is required.".to_string())?;
-    with_engine(&state, |client| client.delete_remote_branch(&name))
+    with_engine(&state, move |client| client.delete_remote_branch(&name)).await
 }
 
 #[tauri::command]
-fn rename_branch(
+async fn rename_branch(
     old_name: Option<String>,
     new_name: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let old_name = old_name.ok_or_else(|| "The old branch name is required.".to_string())?;
     let new_name = new_name.ok_or_else(|| "The new branch name is required.".to_string())?;
-    with_engine(&state, |client| client.rename_branch(&old_name, &new_name))
+    with_engine(&state, move |client| client.rename_branch(&old_name, &new_name)).await
 }
 
 #[tauri::command]
-fn checkout_new_branch(
+async fn checkout_new_branch(
     name: Option<String>,
     from_ref: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let name = name.ok_or_else(|| "A branch name is required.".to_string())?;
     let from_ref = from_ref.ok_or_else(|| "A start ref is required.".to_string())?;
-    with_engine(&state, |client| client.checkout_new_branch_from(&name, &from_ref))
+    with_engine(&state, move |client| client.checkout_new_branch_from(&name, &from_ref)).await
 }
 
 #[tauri::command]
-fn set_upstream(
+async fn set_upstream(
     branch: Option<String>,
     upstream: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let upstream = upstream.ok_or_else(|| "An upstream branch is required.".to_string())?;
-    with_engine(&state, |client| client.set_upstream(branch.as_deref(), &upstream))
+    with_engine(&state, move |client| client.set_upstream(branch.as_deref(), &upstream)).await
 }
 
 #[tauri::command]
-fn unset_upstream(branch: Option<String>, state: State<AppState>) -> Result<String, String> {
-    with_engine(&state, |client| client.unset_upstream(branch.as_deref()))
+async fn unset_upstream(branch: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.unset_upstream(branch.as_deref())).await
 }
 
 #[tauri::command]
-fn compare_branch(branch: Option<String>, state: State<AppState>) -> Result<BranchCompareDto, String> {
+async fn compare_branch(branch: Option<String>, state: State<'_, AppState>) -> Result<BranchCompareDto, String> {
     let branch = branch.ok_or_else(|| "A branch name is required.".to_string())?;
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         let (ours, theirs) = client.branch_compare(&branch)?;
         Ok(BranchCompareDto {
             ours: ours.iter().map(map_commit).collect(),
             theirs: theirs.iter().map(map_commit).collect(),
         })
     })
+    .await
 }
 
 #[tauri::command]
-fn get_tags(state: State<AppState>) -> Result<Vec<TagDto>, String> {
-    with_engine(&state, |client| {
+async fn get_tags(state: State<'_, AppState>) -> Result<Vec<TagDto>, String> {
+    with_engine(&state, move |client| {
         let tags: Vec<TagEntry> = client.list_tags()?;
         Ok(tags
             .into_iter()
@@ -676,71 +698,73 @@ fn get_tags(state: State<AppState>) -> Result<Vec<TagDto>, String> {
             })
             .collect())
     })
+    .await
 }
 
 #[tauri::command]
-fn create_tag(
+async fn create_tag(
     name: Option<String>,
     rev: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let name = name.ok_or_else(|| "A tag name is required.".to_string())?;
-    with_engine(&state, |client| client.create_tag(&name, rev.as_deref()))
+    with_engine(&state, move |client| client.create_tag(&name, rev.as_deref())).await
 }
 
 #[tauri::command]
-fn delete_tag(name: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn delete_tag(name: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let name = name.ok_or_else(|| "A tag name is required.".to_string())?;
-    with_engine(&state, |client| client.delete_tag(&name))
+    with_engine(&state, move |client| client.delete_tag(&name)).await
 }
 
 #[tauri::command]
-fn push_tags(state: State<AppState>) -> Result<String, String> {
-    with_engine(&state, |client| client.push_tags())
+async fn push_tags(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.push_tags()).await
 }
 
 #[tauri::command]
-fn revert_commit(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn revert_commit(sha: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
-    with_engine(&state, |client| client.revert_commit(&sha))
+    with_engine(&state, move |client| client.revert_commit(&sha)).await
 }
 
 #[tauri::command]
-fn cherry_pick(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn cherry_pick(sha: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
-    with_engine(&state, |client| client.cherry_pick_commit(&sha))
+    with_engine(&state, move |client| client.cherry_pick_commit(&sha)).await
 }
 
 #[tauri::command]
-fn drop_commit(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+async fn drop_commit(sha: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
-    with_engine(&state, |client| client.drop_commit(&sha))
+    with_engine(&state, move |client| client.drop_commit(&sha)).await
 }
 
 #[tauri::command]
-fn undo_commit(state: State<AppState>) -> Result<String, String> {
-    with_engine(&state, |client| client.undo_head_commit())
+async fn undo_commit(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.undo_head_commit()).await
 }
 
 #[tauri::command]
-fn reset_branch(
+async fn reset_branch(
     sha: Option<String>,
     mode: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
     if sha.is_empty() || sha.starts_with('-') {
         return Err(format!("Invalid revision `{sha}`."));
     }
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         client.reset_branch(&sha, mode.as_deref().unwrap_or("mixed"))
     })
+    .await
 }
 
 #[tauri::command]
-fn commit_detail(sha: Option<String>, state: State<AppState>) -> Result<CommitDetailDto, String> {
+async fn commit_detail(sha: Option<String>, state: State<'_, AppState>) -> Result<CommitDetailDto, String> {
     let sha = sha.unwrap_or_else(|| "HEAD".to_string());
-    with_engine(&state, |client| {
+    with_engine(&state, move |client| {
         let detail: CommitDetail = client.commit_detail(&sha)?;
         Ok(CommitDetailDto {
             hash: detail.hash.clone(),
@@ -764,17 +788,18 @@ fn commit_detail(sha: Option<String>, state: State<AppState>) -> Result<CommitDe
                 .collect(),
         })
     })
+    .await
 }
 
 #[tauri::command]
-fn commit_file_diff(
+async fn commit_file_diff(
     sha: Option<String>,
     path: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
     let path = path.ok_or_else(|| "A file path is required.".to_string())?;
-    with_engine(&state, |client| client.commit_file_diff(&sha, &path))
+    with_engine(&state, move |client| client.commit_file_diff(&sha, &path)).await
 }
 
 fn main() {
