@@ -6,7 +6,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use git_jet::core::{
-    CmdOutput, DiffMode, GitClient, GitExecutor, GitRequest, Rendered, RollbackLevel, StashAction,
+    CmdOutput, DiffMode, GitClient, GitExecutor, GitRequest, LogFilter, Rendered, RollbackLevel,
+    StashAction,
 };
 use tempfile::TempDir;
 
@@ -717,11 +718,7 @@ fn commit_change(dir: &TempDir, file: &str, contents: &str, message: &str) -> St
     write(dir.path(), file, contents);
     git(dir.path(), &["add", "--all"]);
     git(dir.path(), &["commit", "-q", "-m", message]);
-    let mut output = git(dir.path(), &["rev-parse", "HEAD"]);
-    while output.ends_with(['\n', '\r']) {
-        output.pop();
-    }
-    output
+    git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string()
 }
 
 #[test]
@@ -731,7 +728,7 @@ fn merge_branches_and_reports_conflict_state() {
 
     // Clean merge with --no-ff.
     git(dir.path(), &["switch", "-q", "-c", "feature"]);
-    let feature_commit = commit_change(&dir, "feature.txt", "feature\n", "feature work");
+    commit_change(&dir, "feature.txt", "feature\n", "feature work");
     git(dir.path(), &["switch", "-q", "main"]);
     let output = client.merge_branch("feature", true).unwrap();
     assert!(output.contains("feature") || output.contains("Merge"), "{output}");
@@ -741,7 +738,6 @@ fn merge_branches_and_reports_conflict_state() {
     // Conflicting merge: abort restores the pre-merge state.
     git(dir.path(), &["switch", "-q", "-c", "conflict"]);
     commit_change(&dir, "a.txt", "branch side\n", "branch side changed");
-    feature_commit;
     git(dir.path(), &["switch", "-q", "main"]);
     write(dir.path(), "a.txt", "main side\n");
     git(dir.path(), &["add", "a.txt"]);
@@ -765,10 +761,10 @@ fn merge_branches_and_reports_conflict_state() {
 }
 
 #[test]
-fn merge_aborts_without_a_started_merge() {
+fn merge_abort_without_a_started_merge_fails() {
     let dir = init_repo();
     let error = client(&dir).merge_abort().unwrap_err();
-    assert!(error.contains("merge"), "surfaces the git failure: {error}");
+    assert!(error.to_lowercase().contains("merge"), "{error}");
 }
 
 #[test]
@@ -776,17 +772,19 @@ fn commit_detail_lists_files_and_per_file_diffs() {
     let dir = init_repo();
     let mut client = client(&dir);
 
-    let second = commit_change(&dir, "b.txt", "brand\nnew\nfile\n", "add file");
+    commit_change(&dir, "b.txt", "brand\nnew\nfile\n", "add file");
     git(dir.path(), &["mv", "b.txt", "c.txt"]);
-    let last = commit_change(&dir, "extra.txt", "extra\n", "rename then add");
-    assert!(last.len() >= 7 && second.len() >= 7);
+    commit_change(&dir, "extra.txt", "extra\n", "rename then add");
 
     let detail = client.commit_detail("HEAD").unwrap();
     assert_eq!(detail.subject, "rename then add");
     assert_eq!(detail.author, "Git Jet Tests");
-    assert!(detail.files.iter().any(|f| f.status.starts_with('R')
-        && f.orig_path.as_deref() == Some("b.txt")
-        && f.path == "c.txt"));
+    assert!(detail
+        .files
+        .iter()
+        .any(|f| f.status.starts_with('R')
+            && f.orig_path.as_deref() == Some("b.txt")
+            && f.path == "c.txt"));
     assert!(detail.files.iter().any(|f| f.status == "A" && f.path == "extra.txt"));
 
     let patch = client.commit_file_diff("HEAD", "c.txt").unwrap();
@@ -814,37 +812,44 @@ fn tags_flow_creates_and_deletes() {
     client.delete_tag("v0.9").unwrap();
     let tags = client.list_tags().unwrap();
     assert!(!tags.iter().any(|t| t.name == "v0.9"));
-    assert_eq!(
-        git(dir.path(), &["rev-parse", "v1.0^{commit}"]).trim(),
-        head
-    );
+    assert_eq!(git(dir.path(), &["rev-parse", "v1.0^{commit}"]).trim(), head);
 }
 
 #[test]
-fn commit_history_operations_create_expectations() {
+fn cherry_pick_revert_undo_and_drop_modify_history() {
     let dir = init_repo();
     let mut client = client(&dir);
     let base = commit_change(&dir, "a.txt", "base\n", "base commit");
-    let picked_number = commit_change(&dir, "picked.txt", "picked\n", "commit to pick");
-    let head = commit_change(&dir, "a.txt", "head\n", "head commit");
 
-    // Revert creates a new inverse commit.
-    client.revert_commit(&head).unwrap();
+    // A commit isolated on another branch is the classic cherry-pick source.
+    git(dir.path(), &["switch", "-q", "-c", "source"]);
+    let picked = commit_change(&dir, "picked.txt", "picked\n", "fresh pick");
+    git(dir.path(), &["switch", "-q", "main"]);
+    let head_before_pick = commit_change(&dir, "a.txt", "head\n", "head commit");
+
+    // Revert removes the head commit's changes as a new commit.
+    client.revert_commit(&head_before_pick).unwrap();
     assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "base\n");
 
-    // Cherry-pick of the picked commit applies it again.
-    client.cherry_pick_commit(&picked_number).unwrap();
+    // Cherry-pick applies the isolated commit on top.
+    client.cherry_pick_commit(&picked).unwrap();
     assert_eq!(fs::read_to_string(dir.path().join("picked.txt")).unwrap(), "picked\n");
+    let copied = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(copied, base);
+    assert_ne!(copied, picked);
 
-    // Drop rewrites the picked commit away again.
-    client.drop_commit(&picked_number).unwrap();
+    // Drop rewrites the cherry-picked commit out again.
+    client.drop_commit(&copied).unwrap();
     assert!(!dir.path().join("picked.txt").exists());
 
-    // Undo moves HEAD back with changes restored to the worktree.
+    // Undo moves HEAD back to the parent; changes stay in the worktree.
     client.undo_head_commit().unwrap();
     assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), base);
-    assert!(fs::read_to_string(dir.path().join("a.txt")).unwrap().contains("base"));
-    assert_eq!(git(dir.path(), &["status", "--porcelain=v2", "-z"]).trim().split('\0').count() > 0, true, "worktree holds the undone changes");
+    let status = client.status().unwrap();
+    assert!(
+        !status.unstaged().is_empty() || !status.staged().is_empty(),
+        "worktree holds the undone changes"
+    );
 }
 
 #[test]
@@ -852,8 +857,7 @@ fn reset_branch_modes_match_git_semantics() {
     let dir = init_repo();
     let mut client = client(&dir);
     let base = commit_change(&dir, "a.txt", "base\n", "base commit");
-    let _head = commit_change(&dir, "b.txt", "added\n", "addition commit");
-
+    commit_change(&dir, "b.txt", "added\n", "addition commit");
     write(dir.path(), "c.txt", "dirty\n");
 
     client.reset_branch(&base, "soft").unwrap();
@@ -866,9 +870,6 @@ fn reset_branch_modes_match_git_semantics() {
     client.reset_branch(&base, "hard").unwrap();
     assert!(!dir.path().join("c.txt").exists());
     assert!(!dir.path().join("b.txt").exists());
-
-    assert!(client.reset_branch(&base, "banana-mode").is_ok() == false
-        || git(dir.path(), &["rev-parse", "HEAD"]).trim() == base);
 }
 
 #[test]
@@ -877,41 +878,134 @@ fn log_filters_narrow_the_graph() {
     let mut client = client(&dir);
     commit_change(&dir, "a.txt", "one\n", "alpha work");
     commit_change(&dir, "b.txt", "two\n", "gamma work");
-    let filter_none = LogFilter::default();
-    let all = client.log_nodes(20, false, &filter_none).unwrap();
+
+    let all = client.log_nodes(20, false, &LogFilter::default()).unwrap();
     assert_eq!(all.len(), 3);
 
     let by_text = client
-        .log_nodes(20, false, &LogFilter { text: Some("alpha".to_string()), ..LogFilter::default() })
+        .log_nodes(
+            20,
+            false,
+            &LogFilter { text: Some("alpha".to_string()), ..LogFilter::default() },
+        )
         .unwrap();
     assert_eq!(by_text.len(), 1);
     assert_eq!(by_text[0].commit.subject, "alpha work");
 
     let by_author = client
-        .log_nodes(20, false, &LogFilter { author: Some("nobody".to_string()), ..LogFilter::default() })
+        .log_nodes(
+            20,
+            false,
+            &LogFilter { author: Some("nobody".to_string()), ..LogFilter::default() },
+        )
         .unwrap();
     assert!(by_author.is_empty());
 
     let by_path = client
-        .log_nodes(20, false, &LogFilter { path: Some("b.txt".to_string()), ..LogFilter::default() })
+        .log_nodes(
+            20,
+            false,
+            &LogFilter { path: Some("b.txt".to_string()), ..LogFilter::default() },
+        )
         .unwrap();
     assert_eq!(by_path.len(), 1);
     assert_eq!(by_path[0].commit.subject, "gamma work");
 }
 
-#[test]
-fn outgoing_and_push_work_against_a_local_bare_remote() {
-    let repo_dir = tempfile::tempdir().unwrap();
-    let remote = repo_dir.path().join("remote.git");
+/// Creates a bare remote over the local filesystem plus a clone to work in,
+/// returning `(worktree, client)`. The file transport needs no credentials.
+fn clone_of_bare_remote() -> (TempDir, TempDir) {
+    let holder = tempfile::tempdir().unwrap();
+    let client_dir = tempfile::tempdir().unwrap();
+    let remote_path = holder.path().join("origin.git");
+    assert!(Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .arg("--bare")
+        .arg("--initial-branch=main")
+        .arg(&remote_path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false), "creating the bare remote failed");
+    // The clone needs the repository config done by `git clone` itself.
     git(
-        Path::new(&remote),
+        client_dir.path(),
         &[
-            "init", "-q", "--bare", "--initial-branch=main", remote.to_str().unwrap(),
+            "clone",
+            "-q",
+            "-c",
+            "user.name=Git Jet Tests",
+            "-c",
+            "user.email=git-jet@example.test",
+            remote_path.to_str().unwrap(),
+            client_dir.path().join("worktree").to_str().unwrap(),
         ],
     );
-    git(
-        repo_dir.path(),
-        &["push", "-q", remote.to_str().unwrap(), "HEAD:refs/heads/main"],
-    );
-    println!("placeholder");
+    (holder, client_dir)
 }
+
+fn test_git_config(dir: &Path) {
+    git(dir, &["config", "user.name", "Git Jet Tests"]);
+    git(dir, &["config", "user.email", "git-jet@example.test"]);
+}
+
+#[test]
+fn outgoing_list_and_push_options_work_over_a_local_remote() {
+    let (_holder, holder) = clone_of_bare_remote();
+    let worktree = holder.path().join("worktree");
+    test_git_config(&worktree);
+    let mut client = GitClient::new(
+        StdExecutor,
+        worktree.to_str().unwrap().to_string(),
+    );
+
+    // The clone is empty except for config; make an initial commit.
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+
+    // Fresh clone without upstream: push lists the whole history.
+    let (commits, has_upstream) = client.outgoing_commits(50).unwrap();
+    assert!(!has_upstream, "fresh clone has no tracking yet");
+    assert_eq!(commits.len(), 1);
+
+    client.push().unwrap();
+
+    // After the push nothing is ahead.
+    let (commits, has_upstream) = client.outgoing_commits(50).unwrap();
+    assert!(has_upstream);
+    assert!(commits.is_empty());
+
+    // One more commit, push with explicit remote + branch.
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "second"]);
+    client
+        .push_with_options(Some("origin"), Some("main"), false, false)
+        .unwrap();
+    let (commits, _) = client.outgoing_commits(50).unwrap();
+    assert!(commits.is_empty());
+}
+
+#[test]
+fn delete_remote_branch_removes_it_on_the_remote() {
+    let (_holder, holder) = clone_of_bare_remote();
+    let worktree = holder.path().join("worktree");
+    test_git_config(&worktree);
+    let mut client = GitClient::new(
+        StdExecutor,
+        worktree.to_str().unwrap().to_string(),
+    );
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    client.push().unwrap();
+
+    git(&worktree, &["switch", "-q", "-c", "temp"]);
+    client.push_with_options(Some("origin"), Some("temp"), false, true).unwrap();
+    let remotes = git(&worktree, &["branch", "-r", "--format=%(refname:short)"]);
+    assert!(remotes.contains("origin/temp"), "{remotes}");
+
+    client.delete_remote_branch("origin/temp").unwrap();
+    let remotes = git(&worktree, &["branch", "-r", "--format=%(refname:short)"]);
+    assert!(!remotes.contains("origin/temp"), "{remotes}");
+}
+
