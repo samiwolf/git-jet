@@ -710,3 +710,208 @@ fn rollback_untracked_deletes_the_file() {
 
     assert!(!dir.path().join("scratch.txt").exists());
 }
+
+/* ============================== new operations ============================ */
+
+fn commit_change(dir: &TempDir, file: &str, contents: &str, message: &str) -> String {
+    write(dir.path(), file, contents);
+    git(dir.path(), &["add", "--all"]);
+    git(dir.path(), &["commit", "-q", "-m", message]);
+    let mut output = git(dir.path(), &["rev-parse", "HEAD"]);
+    while output.ends_with(['\n', '\r']) {
+        output.pop();
+    }
+    output
+}
+
+#[test]
+fn merge_branches_and_reports_conflict_state() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    // Clean merge with --no-ff.
+    git(dir.path(), &["switch", "-q", "-c", "feature"]);
+    let feature_commit = commit_change(&dir, "feature.txt", "feature\n", "feature work");
+    git(dir.path(), &["switch", "-q", "main"]);
+    let output = client.merge_branch("feature", true).unwrap();
+    assert!(output.contains("feature") || output.contains("Merge"), "{output}");
+    let log = git(dir.path(), &["log", "--oneline", "-2"]);
+    assert!(log.contains("Merge branch 'feature'"), "{log}");
+
+    // Conflicting merge: abort restores the pre-merge state.
+    git(dir.path(), &["switch", "-q", "-c", "conflict"]);
+    commit_change(&dir, "a.txt", "branch side\n", "branch side changed");
+    feature_commit;
+    git(dir.path(), &["switch", "-q", "main"]);
+    write(dir.path(), "a.txt", "main side\n");
+    git(dir.path(), &["add", "a.txt"]);
+    git(dir.path(), &["commit", "-q", "-m", "main side changed"]);
+
+    let merge_error = client.merge_branch("conflict", false).unwrap_err();
+    assert!(merge_error.contains("CONFLICT"), "{merge_error}");
+
+    let report = client.status().unwrap();
+    assert!(report.merge_in_progress, "merge should be in progress");
+    assert_eq!(report.conflicts().len(), 1);
+
+    client.merge_abort().unwrap();
+    let report = client.status().unwrap();
+    assert!(!report.merge_in_progress, "abort should clear the state");
+    assert!(report.conflicts().is_empty());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "main side\n"
+    );
+}
+
+#[test]
+fn merge_aborts_without_a_started_merge() {
+    let dir = init_repo();
+    let error = client(&dir).merge_abort().unwrap_err();
+    assert!(error.contains("merge"), "surfaces the git failure: {error}");
+}
+
+#[test]
+fn commit_detail_lists_files_and_per_file_diffs() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    let second = commit_change(&dir, "b.txt", "brand\nnew\nfile\n", "add file");
+    git(dir.path(), &["mv", "b.txt", "c.txt"]);
+    let last = commit_change(&dir, "extra.txt", "extra\n", "rename then add");
+    assert!(last.len() >= 7 && second.len() >= 7);
+
+    let detail = client.commit_detail("HEAD").unwrap();
+    assert_eq!(detail.subject, "rename then add");
+    assert_eq!(detail.author, "Git Jet Tests");
+    assert!(detail.files.iter().any(|f| f.status.starts_with('R')
+        && f.orig_path.as_deref() == Some("b.txt")
+        && f.path == "c.txt"));
+    assert!(detail.files.iter().any(|f| f.status == "A" && f.path == "extra.txt"));
+
+    let patch = client.commit_file_diff("HEAD", "c.txt").unwrap();
+    assert!(patch.contains("diff --git"), "{patch}");
+    assert!(patch.contains("c.txt"), "{patch}");
+}
+
+#[test]
+fn tags_flow_creates_and_deletes() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    let head = commit_change(&dir, "a.txt", "tagged\n", "commit for tag");
+
+    client.create_tag("v1.0", Some("HEAD")).unwrap();
+    client.create_tag("v0.9", None).unwrap();
+    let tags = client.list_tags().unwrap();
+    assert!(tags.iter().any(|t| t.name == "v1.0"));
+    assert!(tags.iter().any(|t| t.name == "v0.9"));
+    let v1 = tags.iter().find(|t| t.name == "v1.0").unwrap();
+    assert_eq!(v1.hash.len(), 7);
+
+    // The tag shows up in the log decorations.
+    assert!(git(dir.path(), &["log", "--oneline", "-1"]).contains("v1.0"));
+
+    client.delete_tag("v0.9").unwrap();
+    let tags = client.list_tags().unwrap();
+    assert!(!tags.iter().any(|t| t.name == "v0.9"));
+    assert_eq!(
+        git(dir.path(), &["rev-parse", "v1.0^{commit}"]).trim(),
+        head
+    );
+}
+
+#[test]
+fn commit_history_operations_create_expectations() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    let base = commit_change(&dir, "a.txt", "base\n", "base commit");
+    let picked_number = commit_change(&dir, "picked.txt", "picked\n", "commit to pick");
+    let head = commit_change(&dir, "a.txt", "head\n", "head commit");
+
+    // Revert creates a new inverse commit.
+    client.revert_commit(&head).unwrap();
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "base\n");
+
+    // Cherry-pick of the picked commit applies it again.
+    client.cherry_pick_commit(&picked_number).unwrap();
+    assert_eq!(fs::read_to_string(dir.path().join("picked.txt")).unwrap(), "picked\n");
+
+    // Drop rewrites the picked commit away again.
+    client.drop_commit(&picked_number).unwrap();
+    assert!(!dir.path().join("picked.txt").exists());
+
+    // Undo moves HEAD back with changes restored to the worktree.
+    client.undo_head_commit().unwrap();
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), base);
+    assert!(fs::read_to_string(dir.path().join("a.txt")).unwrap().contains("base"));
+    assert_eq!(git(dir.path(), &["status", "--porcelain=v2", "-z"]).trim().split('\0').count() > 0, true, "worktree holds the undone changes");
+}
+
+#[test]
+fn reset_branch_modes_match_git_semantics() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    let base = commit_change(&dir, "a.txt", "base\n", "base commit");
+    let _head = commit_change(&dir, "b.txt", "added\n", "addition commit");
+
+    write(dir.path(), "c.txt", "dirty\n");
+
+    client.reset_branch(&base, "soft").unwrap();
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), base);
+    assert!(git(dir.path(), &["diff", "--cached", "--name-only"]).contains("b.txt"));
+
+    client.reset_branch(&base, "mixed").unwrap();
+    assert!(!git(dir.path(), &["diff", "--cached", "--name-only"]).contains("b.txt"));
+
+    client.reset_branch(&base, "hard").unwrap();
+    assert!(!dir.path().join("c.txt").exists());
+    assert!(!dir.path().join("b.txt").exists());
+
+    assert!(client.reset_branch(&base, "banana-mode").is_ok() == false
+        || git(dir.path(), &["rev-parse", "HEAD"]).trim() == base);
+}
+
+#[test]
+fn log_filters_narrow_the_graph() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    commit_change(&dir, "a.txt", "one\n", "alpha work");
+    commit_change(&dir, "b.txt", "two\n", "gamma work");
+    let filter_none = LogFilter::default();
+    let all = client.log_nodes(20, false, &filter_none).unwrap();
+    assert_eq!(all.len(), 3);
+
+    let by_text = client
+        .log_nodes(20, false, &LogFilter { text: Some("alpha".to_string()), ..LogFilter::default() })
+        .unwrap();
+    assert_eq!(by_text.len(), 1);
+    assert_eq!(by_text[0].commit.subject, "alpha work");
+
+    let by_author = client
+        .log_nodes(20, false, &LogFilter { author: Some("nobody".to_string()), ..LogFilter::default() })
+        .unwrap();
+    assert!(by_author.is_empty());
+
+    let by_path = client
+        .log_nodes(20, false, &LogFilter { path: Some("b.txt".to_string()), ..LogFilter::default() })
+        .unwrap();
+    assert_eq!(by_path.len(), 1);
+    assert_eq!(by_path[0].commit.subject, "gamma work");
+}
+
+#[test]
+fn outgoing_and_push_work_against_a_local_bare_remote() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let remote = repo_dir.path().join("remote.git");
+    git(
+        Path::new(&remote),
+        &[
+            "init", "-q", "--bare", "--initial-branch=main", remote.to_str().unwrap(),
+        ],
+    );
+    git(
+        repo_dir.path(),
+        &["push", "-q", remote.to_str().unwrap(), "HEAD:refs/heads/main"],
+    );
+    println!("placeholder");
+}

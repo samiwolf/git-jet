@@ -225,6 +225,12 @@ pub struct StatusReport {
     pub entries: Vec<StatusEntry>,
     pub stash_count: usize,
     pub last_commit: Option<Commit>,
+    /// `MERGE_HEAD` exists — a merge is being resolved.
+    pub merge_in_progress: bool,
+    /// `CHERRY_PICK_HEAD` exists — a cherry-pick is being resolved.
+    pub cherry_pick_in_progress: bool,
+    /// `REVERT_HEAD` exists — a revert is being resolved.
+    pub revert_in_progress: bool,
 }
 
 impl StatusReport {
@@ -279,6 +285,66 @@ pub struct Commit {
     pub author: String,
     pub date: String,
     pub subject: String,
+}
+
+/// One changed path inside a commit, from `git show --raw -z`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    /// Raw status letters, e.g. `M`, `A`, `D`, `R100`.
+    pub status: String,
+    pub path: String,
+    /// Source path for renames and copies.
+    pub orig_path: Option<String>,
+}
+
+impl ChangedFile {
+    /// `docs/plan.md`, or `docs/plan.md <- README.md` for renames/copies.
+    pub fn display(&self) -> String {
+        match &self.orig_path {
+            Some(orig) => format!("{} <- {}", self.path, orig),
+            None => self.path.clone(),
+        }
+    }
+}
+
+/// Full metadata for one commit plus its changed files.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommitDetail {
+    pub hash: String,
+    pub short_hash: String,
+    pub author: String,
+    pub email: String,
+    pub date: String,
+    pub date_iso: String,
+    pub subject: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
+    pub files: Vec<ChangedFile>,
+}
+
+/// One local tag, from `git for-each-ref refs/tags`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagEntry {
+    pub name: String,
+    pub hash: String,
+    pub date: String,
+}
+
+/// Optional filters for the commit log.
+///
+/// Every field is matched by `git log` itself, so large repositories stay
+/// fast and the frontend never needs a second pass.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LogFilter {
+    /// `--grep`: substring of the commit message (case insensitive).
+    pub text: Option<String>,
+    /// `--author`: substring of the author line (case insensitive).
+    pub author: Option<String>,
+    /// Only commits touching this path.
+    pub path: Option<String>,
+    /// Only commits on these refs instead of the current checkout (used by
+    /// the branch comparison view).
+    pub branch: Option<String>,
 }
 
 /// One commit from `git log` including parents and ref decorations.

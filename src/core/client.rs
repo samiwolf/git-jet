@@ -1,8 +1,9 @@
 //! Git command orchestration for Git Jet.
 
-use super::log::{parse_branches, parse_log_nodes, parse_log_records, parse_stashes};
+use super::log::{parse_branches, parse_log_nodes, parse_log_records, parse_raw_entries, parse_stashes, parse_tags};
 use super::model::{
-    CmdOutput, Commit, CommitNode, GitExecutor, Rendered, StashEntry, StatusReport,
+    CmdOutput, Commit, CommitDetail, CommitNode, GitExecutor, LogFilter, Rendered, StashEntry,
+    StatusReport, TagEntry,
 };
 use super::render;
 use super::request::{DiffMode, GitRequest, RollbackLevel, StashAction};
@@ -102,7 +103,21 @@ impl<E: GitExecutor> GitClient<E> {
         let mut report = parse_status_v2(&output.stdout)?;
         report.stash_count = self.stash_count().unwrap_or(0);
         report.last_commit = self.last_commit().ok().flatten();
+        // Resolving-merge state is only relevant while files are unmerged,
+        // so the extra `rev-parse` probes stay limited to that case.
+        if report.conflicts().is_empty() {
+            return Ok(report);
+        }
+        report.merge_in_progress = self.head_ref_exists("MERGE_HEAD");
+        report.cherry_pick_in_progress = self.head_ref_exists("CHERRY_PICK_HEAD");
+        report.revert_in_progress = self.head_ref_exists("REVERT_HEAD");
         Ok(report)
+    }
+
+    /// Quietly checks whether a special ref like `MERGE_HEAD` exists.
+    fn head_ref_exists(&mut self, name: &str) -> bool {
+        let output = self.exec(&["rev-parse", "-q", "--verify", name]);
+        matches!(output, Ok(output) if output.success())
     }
 
     fn stash_count(&mut self) -> Result<usize, String> {
@@ -575,7 +590,16 @@ impl<E: GitExecutor> GitClient<E> {
     }
 
     /// Commits with parents and ref decorations for the visual graph.
-    pub fn log_nodes(&mut self, count: usize, all: bool) -> Result<Vec<CommitNode>, String> {
+    ///
+    /// Optional filters narrow the set via git itself (`--grep`, `--author`,
+    /// path restriction) or switch the base from the checkout to another
+    /// branch.
+    pub fn log_nodes(
+        &mut self,
+        count: usize,
+        all: bool,
+        filter: &LogFilter,
+    ) -> Result<Vec<CommitNode>, String> {
         if !self.has_head()? {
             return Ok(Vec::new());
         }
@@ -587,8 +611,25 @@ impl<E: GitExecutor> GitClient<E> {
             "-n".to_string(),
             count.to_string(),
         ];
-        if all {
-            args.push("--all".to_string());
+        match &filter.branch {
+            Some(branch) => args.push(branch.clone()),
+            None => {
+                if all {
+                    args.push("--all".to_string());
+                }
+            }
+        }
+        if let Some(text) = &filter.text {
+            args.push("--regexp-ignore-case".to_string());
+            args.push(format!("--grep={text}"));
+        }
+        if let Some(author) = &filter.author {
+            args.push("--regexp-ignore-case".to_string());
+            args.push(format!("--author={author}"));
+        }
+        if let Some(path) = &filter.path {
+            args.push("--".to_string());
+            args.push(path.clone());
         }
         Ok(parse_log_nodes(&self.text_owned(&args)?))
     }
@@ -678,9 +719,395 @@ impl<E: GitExecutor> GitClient<E> {
         self.text(&["pull"])
     }
 
+    /// Pull with dialog options: optional remote/branch and fast-forward-only.
+    ///
+    /// Only merge and fast-forward strategies are offered — this tool window
+    /// deliberately has no rebase support.
+    pub fn pull_with_options(
+        &mut self,
+        remote: Option<&str>,
+        branch: Option<&str>,
+        ff_only: bool,
+    ) -> Result<String, String> {
+        let mut args = vec!["pull".to_string()];
+        if ff_only {
+            args.push("--ff-only".to_string());
+        }
+        if let Some(remote) = remote.map(str::trim).filter(|value| !value.is_empty()) {
+            args.push(remote.to_string());
+        }
+        if let Some(branch) = branch.map(str::trim).filter(|value| !value.is_empty()) {
+            args.push(branch.to_string());
+        }
+        self.text_owned(&args)
+    }
+
     /// Push the current branch. Untracked upstreams are pushed with `-u`.
     pub fn push(&mut self) -> Result<String, String> {
         self.text_owned(&["push".to_string(), "-u".to_string(), "HEAD".to_string()])
+    }
+
+    /// Push with dialog options: explicit remote and branch, optional
+    /// upstream tracking and force push.
+    ///
+    /// Force pushes use `--force-with-lease` so remote commits fetched after
+    /// the checkout cannot be silently discarded.
+    pub fn push_with_options(
+        &mut self,
+        remote: Option<&str>,
+        branch: Option<&str>,
+        force: bool,
+        set_upstream: bool,
+    ) -> Result<String, String> {
+        let remote = remote.map(str::trim).filter(|value| !value.is_empty());
+        let branch = branch.map(str::trim).filter(|value| !value.is_empty());
+        let mut args = vec!["push".to_string()];
+        if set_upstream {
+            args.push("-u".to_string());
+        }
+        if force {
+            args.push("--force-with-lease".to_string());
+        }
+        match (remote, branch) {
+            (Some(remote), Some(branch)) => {
+                if branch.starts_with('-') {
+                    return Err(format!("Invalid branch name `{branch}`."));
+                }
+                args.push(remote.to_string());
+                args.push(format!("{branch}:{branch}"));
+            }
+            (Some(_), None) => {
+                return Err(
+                    "A branch name is required when a remote is given.".to_string()
+                )
+            }
+            (None, _) => args.push("HEAD".to_string()),
+        }
+        self.text_owned(&args)
+    }
+
+    /// Commits that would be sent by Push: everything ahead of the tracking
+    /// upstream, or the whole current history when the branch has none.
+    ///
+    /// Returns `(commits, has_upstream)`.
+    pub fn outgoing_commits(&mut self, limit: usize) -> Result<(Vec<Commit>, bool), String> {
+        if !self.has_head()? {
+            return Ok((Vec::new(), false));
+        }
+        let base = if self.head_ref_exists("@{upstream}") {
+            "@{upstream}".to_string()
+        } else {
+            String::new()
+        };
+        if base.is_empty() {
+            let commits = self.log_first_level(limit, "HEAD")?;
+            return Ok((commits, false));
+        }
+        let range = format!("{base}..HEAD");
+        let commits = self.log_first_level(limit, &range)?;
+        Ok((commits, true))
+    }
+
+    /// Simple (non-graph) log listing, first parent, newest first.
+    fn log_first_level(&mut self, limit: usize, range: &str) -> Result<Vec<Commit>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let output = self.text(&[
+            "log",
+            "--no-color",
+            "--first-parent",
+            format!("-n{}", limit).as_str(),
+            format!("--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1e").as_str(),
+            range,
+        ])?;
+        Ok(parse_log_records(&output))
+    }
+
+    /// Merge a branch into the current branch, optionally with a merge commit
+    /// even when a fast-forward would be possible.
+    pub fn merge_branch(&mut self, target: &str, no_ff: bool) -> Result<String, String> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err("A branch name is required.".to_string());
+        }
+        if target.starts_with('-') {
+            return Err(format!("Invalid merge target `{target}`."));
+        }
+        let mut args = vec!["merge".to_string()];
+        if no_ff {
+            args.push("--no-ff".to_string());
+        }
+        args.push(target.to_string());
+        self.text_owned(&args)
+    }
+
+    /// Abort the merge in progress and restore the pre-merge state.
+    pub fn merge_abort(&mut self) -> Result<String, String> {
+        self.text(&["merge", "--abort"])
+    }
+
+    /// Delete a local branch. With `force`, uncommitted-to-upstream branches
+    /// are deleted too (`-D` instead of `-d`).
+    pub fn delete_branch(&mut self, name: &str, force: bool) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A branch name is required.".to_string());
+        }
+        if name.starts_with('-') {
+            return Err(format!("Invalid branch name `{name}`."));
+        }
+        let flag = if force { "-D" } else { "-d" };
+        self.text(&["branch", flag, name])
+    }
+
+    /// Delete a branch on its remote (`push origin --delete <name>`).
+    pub fn delete_remote_branch(&mut self, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A remote branch name is required.".to_string());
+        }
+        if name.starts_with('-') {
+            return Err(format!("Invalid branch name `{name}`."));
+        }
+        let (remote, branch) = name
+            .split_once('/')
+            .ok_or_else(|| format!("`{name}` does not contain a remote (like origin/{name})."))?;
+        if remote.is_empty() || branch.is_empty() {
+            return Err(format!("`{name}` does not contain a remote (like origin/{name})."));
+        }
+        let branch = branch.trim_start_matches('/');
+        self.text(&["push", remote, "--delete", branch])
+    }
+
+    /// Rename a local branch (`git branch -m old new`).
+    pub fn rename_branch(&mut self, old_name: &str, new_name: &str) -> Result<String, String> {
+        let old_name = old_name.trim();
+        let new_name = new_name.trim();
+        if old_name.is_empty() || new_name.is_empty() {
+            return Err("Old and new branch names are required.".to_string());
+        }
+        if old_name.starts_with('-') {
+            return Err(format!("Invalid branch name `{old_name}`."));
+        }
+        if new_name.starts_with('-') {
+            return Err(format!("Invalid branch name `{new_name}`."));
+        }
+        let result = self.text(&["branch", "-m", old_name, new_name]);
+        if result.is_ok() {
+            return Ok(format!("Branch {old_name} renamed to {new_name}"));
+        }
+        result
+    }
+
+    /// Create a new branch and check it out, starting from `start_ref`
+    /// (a commit hash, another branch or `origin/…`).
+    pub fn checkout_new_branch_from(&mut self, name: &str, start_ref: &str) -> Result<String, String> {
+        let name = name.trim();
+        let start_ref = start_ref.trim();
+        if name.is_empty() || start_ref.is_empty() {
+            return Err("A branch name and a start ref are required.".to_string());
+        }
+        if name.starts_with('-') {
+            return Err(format!("Invalid branch name `{name}`."));
+        }
+        if start_ref.starts_with('-') {
+            return Err(format!("Invalid start ref `{start_ref}`."));
+        }
+        self.text(&["switch", "-c", name, start_ref])
+    }
+
+    /// Point a local branch's (or the current branch's) tracking at `upstream`.
+    pub fn set_upstream(&mut self, branch: Option<&str>, upstream: &str) -> Result<String, String> {
+        let upstream = upstream.trim();
+        if upstream.is_empty() {
+            return Err("An upstream branch is required, for example origin/main.".to_string());
+        }
+        if upstream.starts_with('-') || upstream.contains(' ') {
+            return Err(format!("Invalid upstream branch `{upstream}`."));
+        }
+        let mut args = vec!["branch".to_string(), format!("--set-upstream-to={upstream}")];
+        if let Some(branch) = branch.map(str::trim).filter(|value| !value.is_empty()) {
+            if branch.starts_with('-') {
+                return Err(format!("Invalid branch name `{branch}`."));
+            }
+            args.push(branch.to_string());
+        }
+        self.text_owned(&args)
+    }
+
+    /// Stop a local branch (or the current branch) from tracking anything.
+    pub fn unset_upstream(&mut self, branch: Option<&str>) -> Result<String, String> {
+        let mut args = vec!["branch".to_string(), "--unset-upstream".to_string()];
+        if let Some(branch) = branch.map(str::trim).filter(|value| !value.is_empty()) {
+            if branch.starts_with('-') {
+                return Err(format!("Invalid branch name `{branch}`."));
+            }
+            args.push(branch.to_string());
+        }
+        self.text_owned(&args)
+    }
+
+    /// Two-way comparison with another branch: commits that would be lost
+    /// (`branch..HEAD`) and commits that would be pulled (`HEAD..branch`).
+    ///
+    /// Returns `(ours, theirs)` with `ours` newest first.
+    pub fn branch_compare(
+        &mut self,
+        branch: &str,
+    ) -> Result<(Vec<Commit>, Vec<Commit>), String> {
+        let branch = branch.trim();
+        if branch.is_empty() {
+            return Err("A branch name is required.".to_string());
+        }
+        if branch.starts_with('-') {
+            return Err(format!("Invalid branch name `{branch}`."));
+        }
+        let ours = self.log_first_level(200, &format!("{branch}..HEAD"))?;
+        let theirs = self.log_first_level(200, &format!("HEAD..{branch}"))?;
+        Ok((ours, theirs))
+    }
+
+    /// All local tags, newest creation date first.
+    pub fn list_tags(&mut self) -> Result<Vec<TagEntry>, String> {
+        let output = self.text(&[
+            "for-each-ref",
+            "--sort=-creatordate",
+            format!("--format=%(refname:short){}%(objectname:short){}%(creatordate:relative)",
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR).as_str(),
+            "refs/tags",
+        ])?;
+        Ok(parse_tags(&output))
+    }
+
+    /// Create a tag at the current HEAD or an explicit ref.
+    pub fn create_tag(&mut self, name: &str, rev: Option<&str>) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A tag name is required.".to_string());
+        }
+        if name.starts_with('-') || name.contains(' ') {
+            return Err(format!("Invalid tag name `{name}`."));
+        }
+        if let Some(rev) = rev.map(str::trim).filter(|value| !value.is_empty()) {
+            if rev.starts_with('-') {
+                return Err(format!("Invalid revision `{rev}`."));
+            }
+            self.text(&["tag", name, rev])
+        } else {
+            self.text(&["tag", name])
+        }
+    }
+
+    /// Delete a local tag.
+    pub fn delete_tag(&mut self, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() || name.starts_with('-') {
+            return Err(format!("Invalid tag name `{name}`."));
+        }
+        self.text(&["tag", "-d", name])
+    }
+
+    /// Push all local tags to the default remote.
+    pub fn push_tags(&mut self) -> Result<String, String> {
+        self.text(&["push", "--tags"])
+    }
+
+    /// Revert one non-merge commit as a new commit.
+    pub fn revert_commit(&mut self, rev: &str) -> Result<String, String> {
+        let rev = self.safe_revision("revert", rev)?;
+        self.text(&["revert", "--no-edit", rev.as_str()])
+    }
+
+    /// Cherry-pick one non-merge commit onto the current branch.
+    pub fn cherry_pick_commit(&mut self, rev: &str) -> Result<String, String> {
+        let rev = self.safe_revision("cherry-pick", rev)?;
+        self.text(&["cherry-pick", "--allow-empty", rev.as_str()])
+    }
+
+    /// Remove one non-merge commit from the current branch's history by
+    /// replaying it out: `git rebase --onto <rev>^ <rev> HEAD`.
+    pub fn drop_commit(&mut self, rev: &str) -> Result<String, String> {
+        let rev = self.safe_revision("drop", rev)?;
+        let parent = format!("{rev}^");
+        self.text(&["rebase", "--onto", parent.as_str(), rev.as_str(), "HEAD"])
+    }
+
+    /// Undo the current HEAD commit: the commit disappears and its changes
+    /// stay in the working tree as uncommitted edits (`git reset --mixed`).
+    pub fn undo_head_commit(&mut self) -> Result<String, String> {
+        if !self.has_head()? {
+            return Err("The repository has no commits to undo.".to_string());
+        }
+        self.text(&["reset", "--mixed", "HEAD~1"])
+    }
+
+    /// Rejects empty or option-looking revisions before they reach git.
+    fn safe_revision(&self, action: &str, rev: &str) -> Result<String, String> {
+        let rev = rev.trim();
+        if rev.is_empty() {
+            return Err(format!("{action} requires a commit hash."));
+        }
+        if rev.starts_with('-') {
+            return Err(format!("Invalid revision `{rev}`."));
+        }
+        Ok(rev.to_string())
+    }
+
+    /// Soft, mixed or hard reset of the current branch to a revision.
+    pub fn reset_branch(&mut self, rev: &str, mode: &str) -> Result<String, String> {
+        let mode = match mode {
+            "soft" => "soft",
+            "hard" => "hard",
+            _ => "mixed",
+        };
+        let rev = self.safe_revision("reset", rev)?;
+        self.text(&["reset", format!("--{mode}").as_str(), rev.as_str()])
+    }
+
+    /// Full metadata for one commit plus its changed files.
+    pub fn commit_detail(&mut self, rev: &str) -> Result<CommitDetail, String> {
+        let rev = self.safe_revision("show", rev)?;
+        let output = self.text_owned(&[
+            "show".to_string(),
+            "--raw".to_string(),
+            "-z".to_string(),
+            "--no-color".to_string(),
+            "--find-renames".to_string(),
+            "--diff-merges=first-parent".to_string(),
+            format!("--format=%H{}%h{}%an{}%ae{}%ar{}%ai{}%s{}%P{}%d{}",
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR,
+                crate::core::log::LOG_FIELD_SEPARATOR).to_string(),
+            rev.clone(),
+        ])?;
+        parse_commit_detail(&output)
+    }
+
+    /// The patch of one file inside a commit, with the metadata suppressed
+    /// (`git show --format=`) so the frontend only sees diff text.
+    pub fn commit_file_diff(&mut self, rev: &str, path: &str) -> Result<String, String> {
+        let rev = self.safe_revision("show", rev)?;
+        if path.trim().is_empty() {
+            return Err("A file path is required.".to_string());
+        }
+        self.text_owned(&[
+            "show".to_string(),
+            "--no-color".to_string(),
+            "--format=".to_string(),
+            "--patch".to_string(),
+            "--diff-merges=first-parent".to_string(),
+            rev,
+            "--".to_string(),
+            path.trim().to_string(),
+        ])
     }
 }
 
@@ -690,6 +1117,34 @@ fn plural(count: usize) -> &'static str {
     } else {
         "s"
     }
+}
+
+/// Parse the combined `--format=<fields>` and `--raw -z` output of
+/// [`GitClient::commit_detail`].
+///
+/// Layout: one NUL-terminated metadata record, then the raw entries as
+/// collected by [`parse_raw_entries`]. Refs keep the ` (HEAD -> main, …)`
+/// decoration form before parsing.
+fn parse_commit_detail(input: &str) -> Result<CommitDetail, String> {
+    let mut parts = input.splitn(2, '\0');
+    let meta = parts.next().unwrap_or_default();
+    let raw = parts.next().unwrap_or_default();
+    let fields: Vec<&str> = meta.split('\u{1f}').collect();
+    if fields.len() < 9 {
+        return Err("Unexpected output for commit detail: metadata missing.".to_string());
+    }
+    Ok(CommitDetail {
+        hash: fields[0].to_string(),
+        short_hash: fields[1].to_string(),
+        author: fields[2].to_string(),
+        email: fields[3].to_string(),
+        date: fields[4].to_string(),
+        date_iso: fields[5].to_string(),
+        subject: fields[6].to_string(),
+        parents: fields[7].split_whitespace().map(|p| p.to_string()).collect(),
+        refs: super::log::parse_decorations(fields[8]),
+        files: parse_raw_entries(raw),
+    })
 }
 
 fn clean_error(output: &CmdOutput) -> String {
@@ -1142,4 +1597,479 @@ mod tests {
             .any(|section| section.label == "Recent Commits"));
         assert!(rendered.text.contains("* abc"));
     }
+
+    #[test]
+    fn merge_builds_options_and_validates_target() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "merged\n"),
+        );
+        client
+            .merge_branch("feature", true)
+            .unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["merge", "--no-ff", "feature"]));
+
+        let mut plain = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "merged\n"),
+        );
+        plain.merge_branch("origin/main", false).unwrap();
+        assert!(plain
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["merge", "origin/main"]));
+
+        let mut bad = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, ""),
+        );
+        assert!(bad.merge_branch("--force", false).is_err());
+        assert!(!bad.executor.calls.iter().any(|call| call[0] == "merge"));
+    }
+
+    #[test]
+    fn merge_abort_uses_base_subcommand() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "aborted\n"),
+        );
+        client.merge_abort().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["merge", "--abort"]));
+    }
+
+    #[test]
+    fn branch_operations_build_expected_commands() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "deleted\n")
+                .with(0, "deleted\n")
+                .with(0, "renamed\n")
+                .with(0, "switched\n")
+                .with(0, "tracking\n")
+                .with(0, "tracking\n"),
+        );
+        client.delete_branch("stale", false).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["branch", "-d", "stale"]));
+
+        client.delete_branch("stale", true).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["branch", "-D", "stale"]));
+
+        client.delete_remote_branch("origin/stale").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["push", "origin", "--delete", "stale"]));
+
+        client.rename_branch("old", "new").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["branch", "-m", "old", "new"]));
+
+        client
+            .checkout_new_branch_from("work", "origin/other")
+            .unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["switch", "-c", "work", "origin/other"]));
+
+        client.set_upstream(Some("main"), "origin/main").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["branch", "--set-upstream-to=origin/main", "main"]));
+
+        client.unset_upstream(Some("main")).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["branch", "--unset-upstream", "main"]));
+    }
+
+    #[test]
+    fn delete_remote_branch_rejects_bare_names() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, ""),
+        );
+        assert!(client
+            .delete_remote_branch("main")
+            .unwrap_err()
+            .contains("does not contain a remote"));
+    }
+
+    #[test]
+    fn programmable_pull_push_options_are_honored() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "pulled\n")
+                .with(0, "pushed\n"),
+        );
+        client
+            .pull_with_options(Some("origin"), None, true)
+            .unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["pull", "--ff-only", "origin"]));
+
+        client.push_with_options(Some("origin"), Some("nginx"), false, true).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["push", "-u", "origin", "nginx:nginx"]));
+
+        client.push_with_options(None, None, true, false).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["push", "--force-with-lease", "HEAD"]));
+
+        assert!(client.push_with_options(Some("origin"), None, false, false).is_err());
+    }
+
+    #[test]
+    fn outgoing_uses_upstream_range_when_available() {
+        // `has_head` succeeds, `rev-parse @{upstream}` succeeds, then `log`.
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "abc\n")
+                .with(0, "")
+                .with(0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1f}aaaaaaa\u{1f}Alice\u{1f}2 hours ago\u{1f}WIP\u{1e}"),
+        );
+        let (commits, has_upstream) = client.outgoing_commits(200).unwrap();
+        assert!(has_upstream);
+        assert_eq!(commits.len(), 1);
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["log", "--no-color", "--first-parent", "-n200", "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1e", "@{upstream}..HEAD"]));
+
+        let mut no_upstream = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "abc\n")
+                .with(1, "")
+                .with(0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1f}aaaaaaa\u{1f}Alice\u{1f}2 hours ago\u{1f}Init\u{1e}"),
+        );
+        let (commits, has_upstream) = no_upstream.outgoing_commits(200).unwrap();
+        assert!(!has_upstream);
+        assert_eq!(commits.len(), 1);
+        assert!(no_upstream
+            .executor
+            .calls
+            .iter()
+            .any(|call| call.last() == Some(&"HEAD".to_string())));
+    }
+
+    #[test]
+    fn log_filters_translate_into_git_arguments() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "abc\n")
+                .with(0, ""),
+        );
+        client
+            .log_nodes(
+                30,
+                false,
+                &LogFilter {
+                    text: Some("fix".to_string()),
+                    author: Some("alice".to_string()),
+                    path: Some("src".to_string()),
+                    ..LogFilter::default()
+                },
+            )
+            .unwrap();
+        let log = client
+            .executor
+            .calls
+            .iter()
+            .find(|call| call[0] == "log")
+            .unwrap();
+        for expected in ["--regexp-ignore-case", "--grep=fix", "--author=alice", "--", "src"] {
+            assert!(log.iter().any(|item| item == expected), "{expected} missing");
+        }
+        assert!(!log.iter().any(|arg| arg == "--all"));
+
+        // Branch-filtered logs replace `--all` with the branch rev.
+        let mut by_branch = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "abc\n")
+                .with(0, ""),
+        );
+        by_branch
+            .log_nodes(
+                30,
+                true,
+                &LogFilter {
+                    branch: Some("origin/main".to_string()),
+                    ..LogFilter::default()
+                },
+            )
+            .unwrap();
+        let log = by_branch
+            .executor
+            .calls
+            .iter()
+            .find(|call| call[0] == "log")
+            .unwrap();
+        assert!(log.iter().any(|arg| arg == "origin/main"));
+        assert!(!log.iter().any(|arg| arg == "--all"));
+    }
+
+    #[test]
+    fn merge_state_is_detected_only_with_conflicts() {
+        let clean = "# branch.head main\u{0}1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb a.txt\u{0}";
+        let mut clean_client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, clean)
+                .with(0, "stash@{0}\n")
+                .with(0, ""),
+        );
+        let report = clean_client.status_report().unwrap();
+        assert!(!report.merge_in_progress);
+        // No conflicts -> no probes for MERGE_HEAD, CHERRY_PICK_HEAD or
+        // REVERT_HEAD.
+        assert!(clean_client
+            .executor
+            .calls
+            .iter()
+            .all(|call| call.last().is_none() || call[1] != "-q"));
+
+        let conflicted = "# branch.head main\u{0}u UU N... 100644 100644 100644 100644 aaaaaaa bbbbbbb ccccccc c.txt\u{0}";
+        let mut merge_client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, conflicted) // status
+                .with(0, "")         // stash list
+                .with(0, "")         // log -1
+                .with(0, "abc\n")    // MERGE_HEAD exists
+                .with(0, "")         // CHERRY_PICK_HEAD
+                .with(0, "abc\n"),   // REVERT_HEAD exists
+        );
+        let report = merge_client.status_report().unwrap();
+        assert!(report.merge_in_progress);
+        assert!(report.revert_in_progress);
+        assert_eq!(report.conflicts().len(), 1);
+        assert!(merge_client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rev-parse", "-q", "--verify", "MERGE_HEAD"]));
+    }
+
+    #[test]
+    fn tag_management_builds_expected_commands() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "v1.0\u{1f}aaaaaaa\u{1f}yesterday\n")
+                .with(0, "created\n")
+                .with(0, "deleted\n")
+                .with(0, "pushed\n"),
+        );
+        let tags = client.list_tags().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "v1.0");
+        assert_eq!(tags[0].hash, "aaaaaaa");
+
+        client.create_tag("v1.1", Some("HEAD")).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["tag", "v1.1", "HEAD"]));
+
+        client.delete_tag("v1.0").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["tag", "-d", "v1.0"]));
+
+        client.push_tags().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["push", "--tags"]));
+
+        assert!(client.create_tag("-x", None).is_err());
+        assert!(client.create_tag("", None).is_err());
+    }
+
+    #[test]
+    fn commit_history_operations_build_expected_commands() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "reverted\n")
+                .with(0, "picked\n")
+                .with(0, "dropped\n")
+                .with(0, "reset\n"),
+        );
+        client.revert_commit("abc").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["revert", "--no-edit", "abc"]));
+
+        client.cherry_pick_commit("abc").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["cherry-pick", "--allow-empty", "abc"]));
+
+        client.drop_commit("abc123").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rebase", "--onto", "abc123^", "abc123", "HEAD"]));
+
+        client.reset_branch("abc", "hard").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["reset", "--hard", "abc"]));
+
+        for bad in ["", "-q"] {
+            assert!(client.revert_commit(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn undo_commit_resets_mixed_to_parent() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "abc\n")
+                .with(0, "undone\n"),
+        );
+        client.undo_head_commit().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["reset", "--mixed", "HEAD~1"]));
+    }
+
+    #[test]
+    fn commit_detail_parses_metadata_and_raw_entries() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(
+                    0,
+                    concat!(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1f}aaaaaaa\u{1f}Alice\u{1f}",
+                        "alice@example.com\u{1f}2 hours ago\u{1f}2026-01-02 10:00:00 +0000\u{1f}",
+                        "Rename then edit\u{1f}\u{1f} (HEAD -> main)\u{0}",
+                        ":100644 100644 1111111 1111111 M\u{0}b.txt\u{0}",
+                        ":100644 000000 1111111 0000000 D\u{0}a.txt\u{0}",
+                        ":000000 100644 0000000 2222222 A\u{0}c.txt\u{0}",
+                    ),
+                ),
+        );
+        let detail = client.commit_detail("HEAD").unwrap();
+        assert_eq!(detail.subject, "Rename then edit");
+        assert_eq!(detail.author, "Alice");
+        assert_eq!(detail.email, "alice@example.com");
+        assert_eq!(detail.refs, vec!["HEAD -> main"]);
+        assert_eq!(detail.files.len(), 3);
+
+        let modified = detail.files.iter().find(|f| f.path == "b.txt").unwrap();
+        assert_eq!(modified.status, "M");
+        assert!(modified.orig_path.is_none());
+        let deleted = detail.files.iter().find(|f| f.status == "D").unwrap();
+        assert_eq!(deleted.path, "a.txt");
+    }
+
+    #[test]
+    fn commit_file_diff_gets_searched_show() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "patch body\n"),
+        );
+        let text = client.commit_file_diff("abc", "src/main.rs").unwrap();
+        assert_eq!(text, "patch body\n");
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["show", "--no-color", "--format=", "--patch", "--diff-merges=first-parent", "abc", "--", "src/main.rs"]));
+    }
+
+    #[test]
+    fn branch_compare_lists_ranges_both_ways() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(
+                    0,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1f}aaaaaaa\u{1f}Alice\u{1f}now\u{1f}local\u{1e}",
+                )
+                .with(
+                    0,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u{1f}bbbbbbb\u{1f}Bob\u{1f}now\u{1f}remote\u{1e}",
+                ),
+        );
+        let (ours, theirs) = client.branch_compare("origin/main").unwrap();
+        assert_eq!(ours.len(), 1);
+        assert_eq!(ours[0].subject, "local");
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0].subject, "remote");
+        let ranges: Vec<String> = client
+            .executor
+            .calls
+            .iter()
+            .filter(|call| call[0] == "log")
+            .filter_map(|call| call.last().cloned())
+            .collect();
+        assert_eq!(ranges, vec!["origin/main..HEAD", "HEAD..origin/main"]);
+    }
+
 }

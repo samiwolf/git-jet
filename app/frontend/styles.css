@@ -387,6 +387,100 @@ html, body {
 .diff-line.added::before, .diff-line.removed::before, .diff-line.context::before { visibility: hidden; }
 .diff-empty { color: var(--muted); padding: 20px; text-align: center; }
 
+/* ---------- split (side-by-side) diff ---------- */
+.diff-split { display: flex; flex-direction: column; }
+.split-row { display: flex; }
+.split-row .split-cell { width: 50%; min-width: 0; }
+.split-row .split-cell.blank { background: rgba(255, 255, 255, 0.02); }
+.split-cell .diff-line { padding: 0 10px; }
+.diff-layout { display: flex; gap: 4px; color: var(--muted); }
+.diff-layout::before { content: "Layout:"; align-self: center; font-size: 11px; }
+
+/* ---------- commit detail (log two-pane) ---------- */
+.commit-detail {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  max-height: 30vh;
+  overflow: auto;
+}
+.commit-meta-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: "Segoe UI", sans-serif;
+}
+.commit-detail-subject { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.commit-detail-sha { color: var(--accent); font-family: Consolas, monospace; font-size: 12px; }
+.commit-files { padding-bottom: 4px; }
+
+/* ---------- log filters ---------- */
+.log-filter { max-width: 240px; }
+.log-filter.small-input { max-width: 140px; }
+
+/* ---------- merge banner ---------- */
+.merge-abort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--modified);
+  border-radius: 4px;
+  color: var(--modified);
+  background: var(--modified-bg);
+  font-size: 12px;
+}
+.merge-abort-text { flex: 1; }
+
+/* ---------- modal dialogs ---------- */
+.dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.dialog-card {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dialog-title { font-weight: 600; font-size: 14px; }
+.dialog-checks { display: flex; gap: 16px; color: var(--muted); }
+.dialog-checks label { display: flex; align-items: center; gap: 5px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog-error { color: var(--deleted); margin: 0; min-height: 0; }
+.dialog-commits {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 0;
+}
+.compare-card { width: 800px; }
+.compare-hint { color: var(--muted); margin: 0; font-size: 12px; }
+.compare-columns { display: flex; gap: 12px; }
+.compare-columns > div { flex: 1; min-width: 0; }
+
+/* ---------- tags menu ---------- */
+.tag-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; }
+.tag-rev { max-width: 110px; }
+
+
 /* ---------- status bar ---------- */
 .status-bar {
   display: flex;

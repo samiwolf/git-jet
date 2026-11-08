@@ -1,7 +1,7 @@
 //! Parsers for the line formats produced by `git log`, `git branch --format`
 //! and `git stash list --format`.
 
-use super::model::{Branch, Commit, CommitNode, StashEntry};
+use super::model::{Branch, ChangedFile, Commit, CommitNode, StashEntry, TagEntry};
 
 pub const LOG_FIELD_SEPARATOR: char = '\u{1f}';
 pub const LOG_RECORD_SEPARATOR: char = '\u{1e}';
@@ -69,7 +69,7 @@ fn split_oid_list(input: &str) -> Vec<String> {
 }
 
 /// ` (HEAD -> main, origin/main)` -> `["HEAD -> main", "origin/main"]`.
-fn parse_decorations(input: &str) -> Vec<String> {
+pub fn parse_decorations(input: &str) -> Vec<String> {
     let inner = input
         .trim()
         .trim_start_matches('(')
@@ -177,6 +177,68 @@ pub fn parse_stashes(input: &str) -> Vec<StashEntry> {
             })
         })
         .collect()
+}
+
+/// `git for-each-ref refs/tags --format=%(refname:short)%x1f%(objectname:short)%x1f%(creatordate:relative)`
+pub fn parse_tags(input: &str) -> Vec<TagEntry> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                return None;
+            }
+            let fields: Vec<&str> = line.split(LOG_FIELD_SEPARATOR).collect();
+            if fields.len() < 1 || fields[0].is_empty() {
+                return None;
+            }
+            Some(TagEntry {
+                name: fields[0].to_string(),
+                hash: fields.get(1).copied().unwrap_or("").to_string(),
+                date: fields.get(2).copied().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `git show --raw -z --find-renames`: the `-z` form writes every entry as
+/// `:<modes>\0`, then `status\0` and one or two NUL-terminated path records.
+/// Rename/copy entries list the source path before the destination path.
+pub fn parse_raw_entries(input: &str) -> Vec<ChangedFile> {
+    let mut files = Vec::new();
+    let mut records = input.split('\0').peekable();
+    while let Some(record) = records.next() {
+        let record = record.trim_start_matches('\n');
+        if record.is_empty() {
+            continue;
+        }
+        if !record.starts_with(':') {
+            // The leading `--format` record; everything else is an odd
+            // trailing fragment, which nothing can follow up.
+            continue;
+        }
+        // `:100644 100644 5626abf 5626abf R100`
+        let status = record
+            .rsplit(' ')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        if status.is_empty() {
+            continue;
+        }
+        // Rename/copy letters start with `R` or `C`; git then writes the
+        // source path first, followed by the destination path. Plain entries
+        // have exactly one path record.
+        let is_move = status.starts_with('R') || status.starts_with('C');
+        let path = records.next().unwrap_or("");
+        let second = if is_move { records.next().unwrap_or("") } else { "" };
+        files.push(ChangedFile {
+            status: status.clone(),
+            path: if is_move { second.to_string() } else { path.to_string() },
+            orig_path: if is_move { Some(path.to_string()) } else { None },
+        });
+    }
+    files
 }
 
 #[cfg(test)]

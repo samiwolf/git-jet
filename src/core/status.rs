@@ -110,6 +110,9 @@ pub fn parse_status_v2(bytes: &[u8]) -> Result<StatusReport, String> {
         entries,
         stash_count: 0,
         last_commit: None,
+        merge_in_progress: false,
+        cherry_pick_in_progress: false,
+        revert_in_progress: false,
     })
 }
 

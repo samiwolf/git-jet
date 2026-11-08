@@ -96,7 +96,11 @@ const state = {
   logAll: false,
   selectedFile: null,   // { path, staged, unstaged, untracked }
   selectedCommit: null, // commit hash shown in the diff tab
+  commitFile: null,     // single file selected inside a commit detail
   diffMode: "all",
+  diffLayout: localStorage.getItem("gitjet.diffLayout") || "unified",
+  logFilters: { text: "", author: "", path: "" },
+  commitDetail: null,   // last loaded CommitDetail DTO
   loadedStatus: null,
 };
 
@@ -485,14 +489,16 @@ function repoMenuItems() {
   const ahead = branch ? branch.ahead || 0 : 0;
   const stashes = status ? status.stashCount || 0 : 0;
   return [
-    { label: `Pull (↓ ${behind})`, hint: "from upstream", run: () =>
-      runAction("Pull", () => invoke("pull")) },
-    { label: `Push (↑ ${ahead})`, hint: "to upstream", run: () =>
-      runAction("Push", () => invoke("push")) },
+    { label: `Pull (↓ ${behind})`, hint: "dialog", run: openPullDialog },
+    { label: `Push (↑ ${ahead})`, hint: "dialog", run: openPushDialog },
     { label: `Stash all changes (${stashes} existing)`, hint: "stash push", run: () =>
       runAction("Stash push", () => invoke("stash_push", { message: $("stash-message").value.trim() })) },
     { sep: true },
     { label: "Fetch ⮁ All", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
+    { label: "Reset changes (hard)", danger: true, run: () =>
+      { if (confirm("Hard reset of the current branch to HEAD?\n\nAll uncommitted staged and worktree changes will be deleted!")) {
+        void runAction("Hard reset", () => invoke("reset_branch", { sha: "HEAD", mode: "hard" }));
+      } } },
     { label: "Refresh", hint: "F5", run: refreshAll },
   ];
 }
@@ -507,6 +513,23 @@ function rows() {
 }function renderChanges(status) {
   const list = $("changes-list");
   list.replaceChildren();
+
+  // While a merge is being resolved, offer an escape hatch next to the list.
+  if (status.mergeInProgress) {
+    const abort = el("div", "merge-abort");
+    abort.append(
+      el("span", "merge-abort-text", "Merging — resolve conflicts, stage and commit."),
+      (() => {
+        const btn = el("button", "btn small", "Abort merge");
+        btn.addEventListener("click", () => {
+          if (!confirm("Abort the merge?\n\nThe pre-merge state will be restored.")) return;
+          void runAction("Abort merge", () => invoke("merge_abort"));
+        });
+        return btn;
+      })()
+    );
+    list.append(abort);
+  }
 
   const sections = [];
   if (status.conflicts.length > 0) {
@@ -614,15 +637,25 @@ async function loadDiff() {
   try {
     if (state.selectedCommit) {
       const sha = state.selectedCommit;
+      const detail = await invoke("commit_detail", { sha });
+      state.commitDetail = detail;
+      state.commitFile = null;
       const subjectNode = $("diff-subject");
       const checkoutBtn = el("button", "btn small commit-checkout", "Checkout ⤴");
       checkoutBtn.title = "Check out this commit (detached HEAD)";
-      checkoutBtn.addEventListener("click", () => checkoutCommit(sha, ""));
-      subjectNode.replaceChildren(document.createTextNode(`commit ${sha.slice(0, 10)} · `), checkoutBtn);
-      const text = await invoke("get_commit", { sha: state.selectedCommit });
-      renderDiff(text);
+      checkoutBtn.addEventListener("click", () => checkoutCommit(sha, detail.subject));
+      subjectNode.replaceChildren(
+        document.createTextNode(`commit ${sha.slice(0, 10)} · `),
+        checkoutBtn
+      );
+      renderCommitDetail(detail);
+      const patch = await invoke("get_commit", { sha });
+      renderDiff(patch);
       return;
     }
+    state.commitDetail = null;
+    state.commitFile = null;
+    hide($("commit-detail"));
     if (!state.selectedFile) {
       $("diff-subject").textContent = "working tree";
       setDiffMode(state.diffMode, false);
@@ -702,15 +735,135 @@ function renderDiff(text) {
         hunkHead.append(rollback);
       }
       card.append(hunkHead);
-      const chunkNode = el("div");
-      for (const line of chunk.lines) {
-        chunkNode.append(el("div", line.class, line.text || " "));
+      if (state.diffLayout === "split") {
+        card.append(renderChunkSplit(chunk));
+      } else {
+        const chunkNode = el("div");
+        for (const line of chunk.lines) {
+          chunkNode.append(el("div", line.class, line.text || " "));
+        }
+        card.append(chunkNode);
       }
-      card.append(chunkNode);
     }
     fragment.append(card);
   }
   view.replaceChildren(fragment);
+}
+
+/* Side-by-side rendering: deleted and added runs are paired line-by-line so
+ * the two columns stay in sync; missing sides stay blank. */
+function splitPairs(lines) {
+  const pairs = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.type === "del" || line.type === "add") {
+      const dels = [];
+      const adds = [];
+      while (index < lines.length && (lines[index].type === "del" || lines[index].type === "add")) {
+        (lines[index].type === "del" ? dels : adds).push(lines[index]);
+        index++;
+      }
+      const rows = Math.max(dels.length, adds.length);
+      for (let i = 0; i < rows; i++) {
+        pairs.push({ left: dels[i] || null, right: adds[i] || null });
+      }
+    } else {
+      pairs.push({ left: line, right: line });
+      index++;
+    }
+  }
+  return pairs;
+}
+
+function renderChunkSplit(chunk) {
+  const node = el("div", "diff-split");
+  for (const pair of splitPairs(chunk.lines)) {
+    const row = el("div", "split-row");
+    row.append(splitLine(pair.left, "split-left"));
+    row.append(splitLine(pair.right, "split-right"));
+    node.append(row);
+  }
+  return node;
+}
+
+function splitLine(line, className) {
+  const cell = el("div", "split-cell " + className);
+  if (!line) {
+    cell.classList.add("blank");
+    cell.textContent = " ";
+    return cell;
+  }
+  const base = line.class.replace("diff-line", "").trim();
+  cell.append(el("div", `diff-line ${base}`.trim() || "diff-line", line.text || " "));
+  return cell;
+}
+
+/* Two-pane commit detail: metadata line plus the file list; clicking a file
+ * shows only that file's patch in the diff view. */
+function renderCommitDetail(detail) {
+  const box = $("commit-detail");
+  const meta = $("commit-meta");
+  const parts = [
+    el("span", "commit-detail-subject", detail.subject),
+    el("span", "commit-meta", `${detail.author} · ${detail.date}`),
+    el("span", "commit-detail-sha", detail.hash.slice(0, 10)),
+  ];
+  if (detail.refs && detail.refs.length > 0) {
+    const refs = el("span", "commit-refs");
+    for (const ref of detail.refs) {
+      refs.append(el("span", `ref-badge ${refClass(ref)}`, prettyRef(ref)));
+    }
+    parts.push(refs);
+  }
+  if (detail.parents && detail.parents.length > 1) {
+    parts.push(el("span", "commit-meta", "merge"));
+  }
+  meta.replaceChildren(...parts);
+
+  const files = $("commit-files");
+  files.replaceChildren();
+  const label = el("div", "dropdown-head", `Files changed (${detail.files.length})`);
+  files.append(label);
+  for (const file of detail.files) {
+    const row = el("div", "file-row");
+    const letter = file.status[0] || "?";
+    row.append(
+      el("span", `file-kind ${statusClass(letter)}`, letter),
+      el("span", "file-path", file.displayPath || file.path)
+    );
+    row.title = file.displayPath || file.path;
+    row.addEventListener("click", () => {
+      files.querySelectorAll(".file-row.selected").forEach((n) => n.classList.remove("selected"));
+      row.classList.add("selected");
+      state.commitFile = file.path;
+      $("diff-subject").textContent = `${file.displayPath || file.path} · ${detail.hash.slice(0, 10)}`;
+      void loadCommitFileDiff(file.path);
+    });
+    if (state.commitFile === file.path) row.classList.add("selected");
+    files.append(row);
+  }
+  show(box);
+}
+
+async function loadCommitFileDiff(path) {
+  const view = $("diff-view");
+  try {
+    setStatus("Loading diff…");
+    const text = await invoke("commit_file_diff", { sha: state.selectedCommit, path });
+    setStatus("Ready");
+    renderDiff(text);
+  } catch (error) {
+    view.replaceChildren(el("div", "diff-empty", errorText(error)));
+  }
+}
+
+function statusClass(letter) {
+  if (letter === "M" || letter === "T") return "k-changed";
+  if (letter === "A") return "k-added";
+  if (letter === "D") return "k-deleted";
+  if (letter.startsWith("R") || letter.startsWith("C")) return "k-renamed";
+  return "k-muted";
 }
 
 function parseUnifiedDiff(text) {
@@ -802,7 +955,14 @@ function shortPath(path) {
 async function refreshLog(reset) {
   if (!state.root) return;
   if (reset) state.logCount = LOG_PAGE;
-  const commits = await invoke("get_log", { count: state.logCount, all: state.logAll });
+  const filters = state.logFilters;
+  const commits = await invoke("get_log", {
+    count: state.logCount,
+    all: state.logAll,
+    text: filters.text || null,
+    author: filters.author || null,
+    path: filters.path || null,
+  });
   renderLog(commits);
   $("load-more-btn").classList.toggle("hidden", commits.length < state.logCount);
 }
@@ -851,6 +1011,9 @@ function renderLog(commits) {
       node.classList.add("selected");
     }
     node.addEventListener("contextmenu", (event) => {
+      const isMerge = (commit.parents || []).length > 1;
+      const last = state.loadedStatus && state.loadedStatus.lastCommit;
+      const isHead = Boolean(last && last.hash === commit.hash);
       openContextMenu(event, [
         { head: commit.subject },
         { label: "Show diff", hint: commit.shortHash, run: () => selectCommit(commit, node) },
@@ -859,6 +1022,31 @@ function renderLog(commits) {
           hint: commit.shortHash,
           run: () => checkoutCommit(commit.hash, commit.subject),
         },
+        { sep: true },
+        ...(isMerge ? [] : [
+          { label: "Cherry-pick commit", run: () => historyAction("Cherry-pick", () =>
+              invoke("cherry_pick", { sha: commit.hash }), "the current branch") },
+          { label: "Revert commit", run: () => historyAction("Revert commit", () =>
+              invoke("revert_commit", { sha: commit.hash }), "a new inverse commit") },
+        ]),
+        ...(isHead && !isMerge
+          ? [{ label: "Undo commit (changes back in editor)", run: () => confirmUndoCommit(commit) }]
+          : []),
+        { sep: true },
+        ...(isMerge
+          ? []
+          : [{
+              label: "Drop commit",
+              danger: true,
+              run: () => confirmDropCommit(commit),
+            }]),
+        {
+          label: "Reset current branch to here…",
+          danger: true,
+          run: () => openResetDialog(commit),
+        },
+        { sep: true },
+        { label: "Create tag here…", run: () => createTagAt(commit) },
         { label: "Copy commit hash", run: () => copyText(commit.hash) },
         { label: "Copy subject", run: () => copyText(commit.subject) },
       ]);
@@ -1011,6 +1199,349 @@ function computeGraph(commits) {
   return rows;
 }
 
+/* ------------------------------------------------------- history actions */
+
+/* Generic prompt dialog used for any single-text-field operation. */
+let promptHandler = null;
+function promptDialog(title, placeholder, initial, mode, onSubmit) {
+  const dialog = $("prompt-dialog");
+  $("prompt-title").textContent = title;
+  const input = $("prompt-input");
+  input.value = initial || "";
+  input.placeholder = placeholder || "";
+  input.type = mode === "password" ? "password" : "text";
+  $("prompt-error").textContent = "";
+  promptHandler = async () => {
+    const value = input.value.trim();
+    if (!value) {
+      $("prompt-error").textContent = "Enter a value first.";
+      return;
+    }
+    try {
+      await onSubmit(value);
+      if (!$("prompt-error").textContent) hide(dialog);
+    } catch (error) {
+      $("prompt-error").textContent = errorText(error);
+      setStatus(`${title} failed: ${errorText(error)}`, true);
+    }
+  };
+  show(dialog);
+  input.focus();
+  input.select();
+}
+
+function closeDialogs() {
+  for (const id of ["pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog"]) {
+    hide($(id));
+  }
+}
+
+/* Runs a history-changing operation; after conflicts the tree guide tells
+ * the user what to do (fix, stage, commit). */
+async function runHistoryAction(label, fn) {
+  await runAction(label, fn);
+  const status = state.loadedStatus;
+  if (status && status.conflicts.length > 0) {
+    setStatus(`${label}: conflicts appeared. Edit the files, stage them (→), then commit.`, true);
+  }
+}
+
+async function confirmUndoCommit(commit) {
+  if (!confirm(`Undo commit ${commit.shortHash} ${commit.subject}?\n\n` +
+      "The commit disappears from the current branch but its changes stay in the working tree as uncommitted edits.")) return;
+  await runHistoryAction("Undo commit", () => invoke("undo_commit"));
+}
+
+async function confirmDropCommit(commit) {
+  if (!confirm(`Drop commit ${commit.shortHash} ${commit.subject}?\n\n` +
+      "This rewrites this commit out of the current branch history (git rebase --onto)." +
+      "\nRequires a clean working tree; dropped commits stay reachable via reflog.")) return;
+  await runHistoryAction("Drop commit", () => invoke("drop_commit", { sha: commit.hash }));
+}
+
+/* Reset current branch to a commit: soft keeps index+worktree changes, mixed
+ * keeps files but unstages them, hard discards everything. */
+function openResetDialog(commit) {
+  const items = [
+    { head: `Reset branch (→ ${commit.shortHash})` },
+    { label: "Soft — keep all changes staged", run: () => doReset(commit, "soft") },
+    { label: "Mixed — keep changes, unstage", run: () => doReset(commit, "mixed") },
+    { sep: true },
+    { label: "Hard — delete uncommitted changes", danger: true, hint: "irreversible", run: () => doReset(commit, "hard") },
+  ];
+  const event = lastMouseEvent;
+  if (event) openContextMenu(event, items);
+}
+
+let lastMouseEvent = null;
+document.addEventListener("contextmenu", (event) => {
+  lastMouseEvent = event;
+}, true);
+
+async function doReset(commit, mode) {
+  const warnings = {
+    soft: "",
+    mixed: "\nUncommitted files stay in the working tree.",
+    hard: "\nAll uncommitted changes in index and working tree will be deleted!",
+  };
+  const label = { soft: "Soft reset", mixed: "Mixed reset", hard: "Hard reset" }[mode];
+  if (!confirm(`${label} current branch to ${commit.shortHash} (${commit.subject})?${warnings[mode]}`)) return;
+  await runHistoryAction(label, () => invoke("reset_branch", { sha: commit.hash, mode }));
+}
+
+async function createTagAt(commit) {
+  promptDialog("Create tag at " + commit.shortHash, "Tag name, e.g. v1.0", "", "", async (name) => {
+    await runAction(`Tag ${name}`, () => invoke("create_tag", { name, rev: commit.hash }));
+    await refreshTags();
+    await refreshLog(false);
+  });
+}
+
+/* ------------------------------------------------------ merge / branch ops */
+
+async function doMergeIntoCurrent(name, noFF) {
+  const target = `Merge branch '${name}'`;
+  if (!confirm(`Merge ${name} into the current branch?\n\n` +
+      "Merge conflicts appear under Local Changes → Conflicts; resolve them, stage and commit.\n" +
+      "You can abort the merge while resolving.")) return;
+  setStatus("Merging…");
+  try {
+    const output = await invoke("merge_branch", { branch: name, noFF: Boolean(noFF) });
+    setStatus(truncate(String(output || "Merge complete"), 3));
+  } catch (error) {
+    const message = errorText(error);
+    const conflict = message.includes("CONFLICT") || message.includes("conflict");
+    if (conflict) {
+      $("commit-message").value = target;
+      setStatus(`Merging ${name}: conflicts detected — resolve them under Conflicts, stage, then commit.`, true);
+    } else {
+      setStatus(`Merge failed: ${message}`, true);
+    }
+  }
+  await Promise.all([refreshStatus(), refreshBranches()]);
+}
+
+async function deleteBranch(branch, force) {
+  if (branch.remote) {
+    if (!confirm(`Delete remote branch ${branch.name}?\n\nThis runs git push --delete on the remote.`)) return;
+    await runAction(`Delete ${branch.name}`, () =>
+      invoke("delete_remote_branch", { name: branch.name }));
+    await refreshBranches();
+    return;
+  }
+  if (branch.current) {
+    setStatus("Cannot delete the current branch — switch first.", true);
+    return;
+  }
+  const question = `Delete branch ${branch.name}?`;
+  if (!confirm(question)) return;
+  try {
+    const output = await invoke("delete_branch", { name: branch.name, force: Boolean(force) });
+    setStatus(truncate(String(output || "Deleted"), 3));
+  } catch (error) {
+    const message = errorText(error);
+    if (!force && message.includes("not fully merged")) {
+      if (confirm(`${branch.name} is not fully merged.\nDelete it anyway (force)?`)) {
+        try {
+          const output = await invoke("delete_branch", { name: branch.name, force: true });
+          setStatus(truncate(String(output || "Deleted"), 3));
+        } catch (forcedError) {
+          setStatus(`Delete failed: ${errorText(forcedError)}`, true);
+        }
+      }
+    } else {
+      setStatus(`Delete failed: ${message}`, true);
+    }
+  }
+  await refreshBranches();
+}
+
+async function renameBranchFlow(branch) {
+  promptDialog(`Rename ${branch.name}`, "New branch name", branch.name, "", async (name) => {
+    if (name === branch.name) return;
+    await runAction(`Rename ${branch.name}`, () =>
+      invoke("rename_branch", { oldName: branch.name, newName: name }));
+    await refreshBranches();
+  });
+}
+
+async function newBranchFrom(branch) {
+  const suggested = branch.remote ? branch.name.replace(/^[^/]+\//, "") : branch.name + "-from";
+  promptDialog(`New branch from ${branch.name}`, "Branch name", suggested, "", async (name) => {
+    await runAction(`New branch ${name}`, () =>
+      invoke("checkout_new_branch", { name, fromRef: branch.name }));
+    await refreshBranches();
+  });
+}
+
+async function setUpstreamFlow(branch) {
+  promptDialog(
+    `Set upstream for ${branch.name}`,
+    "Upstream, e.g. origin/" + branch.name,
+    branch.upstream || "origin/" + branch.name,
+    "",
+    async (upstream) => {
+      await runAction(`Set upstream ${upstream}`, () =>
+        invoke("set_upstream", { branch: branch.remote ? null : branch.name, upstream }));
+      await refreshBranches();
+    }
+  );
+}
+
+async function unsetUpstreamFlow(branch) {
+  await runAction(`Unset upstream of ${branch.name}`, () =>
+    invoke("unset_upstream", { branch: branch.remote ? null : branch.name }));
+  await refreshBranches();
+}
+
+async function compareBranchFlow(branch) {
+  try {
+    setStatus("Comparing…");
+    const cmp = await invoke("compare_branch", { branch: branch.name });
+    $("compare-name").textContent = branch.name;
+    $("compare-name-2").textContent = branch.name;
+    const ours = $("compare-ours");
+    const theirs = $("compare-theirs");
+    ours.replaceChildren();
+    theirs.replaceChildren();
+    const fill = (node, commits, emptyText) => {
+      if (!commits || commits.length === 0) {
+        node.append(el("div", "empty-hint", emptyText));
+        return;
+      }
+      for (const commit of commits) {
+        const row = el("div", "file-row");
+        row.append(
+          el("span", "commit-sha", commit.shortHash),
+          el("span", "file-path", commit.subject),
+          el("span", "commit-meta", commit.date)
+        );
+        row.title = commit.hash;
+        node.append(row);
+      }
+    };
+    fill(ours, cmp.ours, "No differences");
+    fill(theirs, cmp.theirs, "No differences");
+    show($("compare-dialog"));
+    setStatus("Ready");
+  } catch (error) {
+    setStatus(`Compare failed: ${errorText(error)}`, true);
+  }
+}
+
+/* ---------------------------------------------------------------- push / pull dialogs */
+
+async function openPushDialog() {
+  const dialog = $("push-dialog");
+  $("push-remote").value = "origin";
+  $("push-branch").value = "";
+  $("push-force").checked = false;
+  $("push-upstream").checked = false;
+  $("push-error").textContent = "";
+  const list = $("push-commits");
+  list.replaceChildren(el("div", "empty-hint", "Loading commits…"));
+  show(dialog);
+  try {
+    const { commits, hasUpstream } = await invoke("outgoing");
+    list.replaceChildren();
+    if (!hasUpstream) {
+      list.append(el("div", "empty-hint", "No upstream — pushing with -u creates remote tracking."));
+    }
+    if (commits.length === 0) {
+      list.append(el("div", "empty-hint", "Everything already pushed ✔"));
+    } else {
+      for (const commit of commits) {
+        const row = el("div", "file-row");
+        row.append(
+          el("span", "commit-sha", commit.shortHash),
+          el("span", "file-path", commit.subject),
+          el("span", "commit-meta", commit.date)
+        );
+        list.append(row);
+      }
+    }
+  } catch (error) {
+    $("push-error").textContent = errorText(error);
+  }
+}
+
+async function submitPushDialog() {
+  const remote = $("push-remote").value.trim();
+  const branch = $("push-branch").value.trim();
+  $("push-error").textContent = "";
+  try {
+    const output = await invoke("push_options", {
+      remote: remote || null,
+      branch: branch || null,
+      force: $("push-force").checked,
+      setUpstream: $("push-upstream").checked,
+    });
+    hide($("push-dialog"));
+    setStatus(truncate(String(output || "Push complete"), 3));
+    await Promise.all([refreshStatus(), refreshBranches()]);
+  } catch (error) {
+    $("push-error").textContent = errorText(error);
+  }
+}
+
+function openPullDialog() {
+  $("pull-remote").value = "";
+  $("pull-branch").value = "";
+  $("pull-error").textContent = "";
+  show($("pull-dialog"));
+}
+
+async function submitPullDialog() {
+  const strategy = document.querySelector('input[name="pull-strategy"]:checked');
+  const ffOnly = strategy ? strategy.value === "ff" : false;
+  $("pull-error").textContent = "";
+  try {
+    const output = await invoke("pull_options", {
+      remote: $("pull-remote").value.trim() || null,
+      branch: $("pull-branch").value.trim() || null,
+      ffOnly,
+    });
+    hide($("pull-dialog"));
+    setStatus(truncate(String(output || "Pull complete"), 3));
+    await Promise.all([refreshStatus(), refreshLog(false), refreshBranches()]);
+  } catch (error) {
+    $("pull-error").textContent = errorText(error);
+  }
+}
+
+/* --------------------------------------------------------------- tags menu */
+
+async function refreshTags() {
+  if (!state.root) return;
+  const tags = await invoke("get_tags");
+  const list = $("tags-list");
+  list.replaceChildren();
+  if (tags.length === 0) {
+    list.append(el("div", "empty-hint", "No tags"));
+    return;
+  }
+  for (const tag of tags) {
+    const row = el("div", "file-row");
+    row.append(
+      el("span", "file-kind k-changed", "◆"),
+      el("span", "file-path", tag.name),
+      el("span", "commit-meta", `${tag.hash} ${tag.date}`.trim())
+    );
+    row.title = `${tag.name} → ${tag.hash}`;
+    const deleteBtn = el("span", "file-action", "delete");
+    deleteBtn.title = "Delete tag";
+    deleteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!confirm(`Delete tag ${tag.name}?`)) return;
+      await runAction(`Delete tag ${tag.name}`, () => invoke("delete_tag", { name: tag.name }));
+      await refreshTags();
+      await refreshLog(false);
+    });
+    row.append(deleteBtn);
+    list.append(row);
+  }
+}
+
 /* --------------------------------------------------------------- branches */
 
 async function refreshBranches() {
@@ -1059,9 +1590,65 @@ function renderBranchList(container, branches) {
     row.addEventListener("contextmenu", (event) => {
       const items = [{ head: branch.name }];
       if (!branch.current && !branch.remote) {
-        items.push({ label: `Switch to ${branch.name}`, run: () =>
+        items.push({ label: `Switch to ${branch.name}`, hint: branch.hash, run: () =>
           runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }))
             .then(() => hide($("branch-menu"))) });
+        items.push({ label: "Merge into Current", run: () => {
+          hide($("branch-menu"));
+          void doMergeIntoCurrent(branch.name, false);
+        } });
+        items.push({ label: "Checkout as New Branch from here…", run: () => {
+          hide($("branch-menu"));
+          void newBranchFrom(branch);
+        } });
+      }
+      if (branch.remote) {
+        items.push({ label: "Checkout as New Local Branch…", run: () => {
+          hide($("branch-menu"));
+          void newBranchFrom(branch);
+        } });
+        items.push({ label: "Merge into Current", run: () => {
+          hide($("branch-menu"));
+          void doMergeIntoCurrent(branch.name, false);
+        } });
+      }
+      items.push({ label: "Compare with Current", run: () => {
+        hide($("branch-menu"));
+        void compareBranchFlow(branch);
+      } });
+      if (!branch.remote && branch.upstream) {
+        items.push({ sep: true });
+        items.push({ label: "Set upstream…", hint: branch.upstream, run: () => {
+          hide($("branch-menu"));
+          void setUpstreamFlow(branch);
+        } });
+        items.push({ label: "Stop tracking upstream", run: () => {
+          hide($("branch-menu"));
+          void unsetUpstreamFlow(branch);
+        } });
+      } else if (!branch.remote && !branch.current) {
+        items.push({ sep: true });
+        items.push({ label: "Set upstream…", run: () => {
+          hide($("branch-menu"));
+          void setUpstreamFlow(branch);
+        } });
+      }
+      items.push({ sep: true });
+      if (!branch.remote && !branch.current) {
+        items.push({ label: "Rename…", run: () => {
+          hide($("branch-menu"));
+          void renameBranchFlow(branch);
+        } });
+      }
+      if (!(branch.current && !branch.remote) && !(branch.remote && branch.name.endsWith("/HEAD"))) {
+        items.push({
+          label: branch.remote ? "Delete remote branch…" : "Delete…",
+          danger: true,
+          run: () => {
+            hide($("branch-menu"));
+            void deleteBranch(branch, false);
+          },
+        });
       }
       if (branch.upstream) items.push({ label: "Copy upstream", run: () => copyText(branch.upstream) });
       items.push({ label: "Copy branch name", run: () => copyText(branch.name) });
@@ -1148,6 +1735,7 @@ async function refreshAll() {
   setStatus("Refreshing…");
   try {
     await Promise.all([refreshStatus(), refreshLog(true), refreshBranches(), refreshStashes()]);
+    await refreshTags().catch(() => {});
     await loadDiff().catch(() => {});
     setStatus("Ready");
   } catch (error) {
@@ -1184,8 +1772,85 @@ function boot() {
   $("fetch-btn").addEventListener("click", () =>
     runAction("Fetch", () => invoke("fetch", { all: true }))
   );
-  $("pull-btn").addEventListener("click", () => runAction("Pull", () => invoke("pull")));
-  $("push-btn").addEventListener("click", () => runAction("Push", () => invoke("push")));
+  $("pull-btn").addEventListener("click", openPullDialog);
+  $("push-btn").addEventListener("click", openPushDialog);
+
+  $("pull-cancel").addEventListener("click", () => hide($("pull-dialog")));
+  $("pull-ok").addEventListener("click", submitPullDialog);
+  $("push-cancel").addEventListener("click", () => hide($("push-dialog")));
+  $("push-ok").addEventListener("click", submitPushDialog);
+  $("compare-close").addEventListener("click", () => hide($("compare-dialog")));
+  $("prompt-cancel").addEventListener("click", () => hide($("prompt-dialog")));
+  $("prompt-ok").addEventListener("click", () => {
+    const handler = promptHandler;
+    if (handler) handler();
+  });
+  $("prompt-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      const handler = promptHandler;
+      if (handler) handler();
+    }
+  });
+
+  /* Tags dropdown */
+  $("tags-button").addEventListener("click", async (event) => {
+    const menu = $("tags-menu");
+    if (menu.classList.contains("hidden")) {
+      const button = event.currentTarget;
+      await refreshTags().catch((e) => setStatus(`Tags failed: ${errorText(e)}`, true));
+      const rect = button.getBoundingClientRect();
+      menu.style.left = rect.left + "px";
+      menu.style.top = rect.bottom + 4 + "px";
+      menu.style.position = "fixed";
+      show(menu);
+    } else {
+      hide(menu);
+    }
+  });
+  $("tag-create-btn").addEventListener("click", () => {
+    const name = $("tag-name").value.trim();
+    if (!name) {
+      setStatus("Type a tag name first.", true);
+      return;
+    }
+    const rev = $("tag-rev").value.trim() || null;
+    runAction(`Tag ${name}`, () => invoke("create_tag", { name, rev })).then(() => {
+      $("tag-name").value = "";
+      $("tag-rev").value = "";
+      refreshTags();
+      refreshLog(false);
+    });
+  });
+  $("tag-name").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") $("tag-create-btn").click();
+  });
+  $("tag-rev").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") $("tag-create-btn").click();
+  });
+  $("tag-push-btn").addEventListener("click", () =>
+    runAction("Push tags", () => invoke("push_tags"))
+  );
+
+  /* Log filter inputs */
+  const applyLogFilters = () => refreshLog(true);
+  for (const [inputId, key] of [["log-text", "text"], ["log-author", "author"], ["log-path", "path"]]) {
+    $(inputId).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        state.logFilters[key] = $(inputId).value.trim();
+        applyLogFilters();
+      } else if (event.key === "Escape") {
+        state.logFilters[key] = "";
+        $(inputId).value = "";
+        applyLogFilters();
+      }
+    });
+  }
+  $("log-clear-btn").addEventListener("click", () => {
+    for (const id of ["log-text", "log-author", "log-path"]) $(id).value = "";
+    state.logFilters = { text: "", author: "", path: "" };
+    applyLogFilters();
+  });
+
 
   $("branch-button").addEventListener("click", (event) => {
     const button = event.currentTarget;
@@ -1280,15 +1945,48 @@ function boot() {
   document.querySelectorAll(".diff-mode .tab").forEach((node) =>
     node.addEventListener("click", () => setDiffMode(node.dataset.mode))
   );
+  document.querySelectorAll(".diff-layout .tab").forEach((node) =>
+    node.addEventListener("click", () => {
+      state.diffLayout = node.dataset.layout;
+      localStorage.setItem("gitjet.diffLayout", state.diffLayout);
+      document.querySelectorAll(".diff-layout .tab").forEach((n) =>
+        n.classList.toggle("active", n.dataset.layout === state.diffLayout)
+      );
+      loadDiff();
+    })
+  );
   $("log-all").addEventListener("change", (event) => {
     state.logAll = event.target.checked;
     refreshLog(true);
   });
   $("load-more-btn").addEventListener("click", loadMore);
 
+  // Apply the persisted diff layout before the first render.
+  {
+    state.diffLayout = localStorage.getItem("gitjet.diffLayout") || "unified";
+    document.querySelectorAll(".diff-layout .tab").forEach((n) =>
+      n.classList.toggle("active", n.dataset.layout === state.diffLayout)
+    );
+  }
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "F5") refreshAll();
+    if (event.key === "Escape") closeDialogs();
   });
+
+  /* Auto refresh: re-read status while the window is focused so external
+   * changes (another tool, a terminal, a fetch) show up without F5. */
+  setInterval(async () => {
+    if (!state.root || !document.hasFocus()) return;
+    if (document.querySelector(".dialog:not(.hidden)")) return;
+    try {
+      await refreshStatus();
+    } catch { /* transient errors stay silent */ }
+  }, 15000);
+  window.addEventListener("focus", () => {
+    if (state.root) refreshStatus().catch(() => {});
+  });
+
 
   const last = localStorage.getItem("gitjet.lastRoot");
   if (last) {

@@ -47,6 +47,21 @@
           </div>
         </div>
 
+        <div class="dropdown-wrap">
+          <button id="tags-button" class="btn">Tags ▾</button>
+          <div id="tags-menu" class="dropdown hidden">
+            <div class="dropdown-row">
+              <input id="tag-name" class="text-input" placeholder="New tag name…" />
+              <input id="tag-rev" class="text-input tag-rev" placeholder="at HEAD" />
+              <button id="tag-create-btn" class="btn small">Create</button>
+            </div>
+            <div id="tags-list" class="tag-list"></div>
+            <div class="dropdown-row">
+              <button id="tag-push-btn" class="btn small">Push tags</button>
+            </div>
+          </div>
+        </div>
+
         <div class="spacer"></div>
 
         <button id="refresh-btn" class="btn" title="Refresh (F5)">⟳</button>
@@ -80,6 +95,10 @@
           <section id="tab-log" class="tab-view">
             <div class="log-toolbar">
               <label><input type="checkbox" id="log-all" /> All branches</label>
+              <input id="log-text" class="text-input log-filter" placeholder="Filter by message…  (Enter)" />
+              <input id="log-author" class="text-input log-filter small-input" placeholder="Author…" />
+              <input id="log-path" class="text-input log-filter small-input" placeholder="Path…" />
+              <button id="log-clear-btn" class="btn small" title="Clear filters">✕</button>
               <button id="load-more-btn" class="btn small hidden">Load more</button>
             </div>
             <div id="log-list" class="log-list"></div>
@@ -91,7 +110,15 @@
                 <button class="tab flat" data-mode="unstaged">Unstaged</button>
                 <button class="tab flat" data-mode="staged">Staged</button>
               </div>
+              <div class="diff-layout">
+                <button class="tab flat active" data-layout="unified" title="Unified diff">Unified</button>
+                <button class="tab flat" data-layout="split" title="Side-by-side diff">Split</button>
+              </div>
               <span id="diff-subject" class="diff-subject"></span>
+            </div>
+            <div id="commit-detail" class="commit-detail hidden">
+              <div id="commit-meta" class="commit-meta-box"></div>
+              <div id="commit-files" class="commit-files"></div>
             </div>
             <div id="diff-view" class="diff-view"></div>
           </section>
@@ -116,6 +143,84 @@
     </div>
 
     <div id="context-menu" class="dropdown context-menu hidden"></div>
+
+    <!-- Pull dialog -->
+    <div id="pull-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Pull</div>
+        <div class="dialog-row">
+          <input id="pull-remote" class="text-input" placeholder="Remote (optional)" />
+          <input id="pull-branch" class="text-input" placeholder="Branch (optional)" />
+        </div>
+        <div class="dialog-checks">
+          <label><input type="radio" name="pull-strategy" value="merge" checked /> Merge</label>
+          <label><input type="radio" name="pull-strategy" value="ff" /> Fast-forward only</label>
+        </div>
+        <p id="pull-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="pull-cancel" class="btn">Cancel</button>
+          <button id="pull-ok" class="btn primary">Pull</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Push dialog -->
+    <div id="push-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Push</div>
+        <div class="dialog-row">
+          <input id="push-remote" class="text-input" placeholder="Remote (default push)" />
+          <input id="push-branch" class="text-input" placeholder="Branch (optional)" />
+        </div>
+        <div class="dialog-checks">
+          <label><input type="checkbox" id="push-force" /> Force push</label>
+          <label><input type="checkbox" id="push-upstream" /> Set upstream</label>
+        </div>
+        <div class="dropdown-head">Commits to push</div>
+        <div id="push-commits" class="dialog-commits"></div>
+        <p id="push-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="push-cancel" class="btn">Cancel</button>
+          <button id="push-ok" class="btn primary">Push</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Branch comparison dialog -->
+    <div id="compare-dialog" class="dialog hidden">
+      <div class="dialog-card compare-card">
+        <div class="dialog-title">Compare with <span id="compare-name"></span></div>
+        <p class="compare-hint">Left: commits that switching would carry over · Right: commits that would be lost.</p>
+        <div class="compare-columns">
+          <div>
+            <div class="dropdown-head">Only on current branch</div>
+            <div id="compare-ours" class="dialog-commits"></div>
+          </div>
+          <div>
+            <div class="dropdown-head">Only on <span id="compare-name-2"></span></div>
+            <div id="compare-theirs" class="dialog-commits"></div>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button id="compare-close" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic prompt dialog (rename branch, new branch from ref, tags…) -->
+    <div id="prompt-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title" id="prompt-title">Input</div>
+        <div class="dialog-row">
+          <input id="prompt-input" class="text-input" />
+        </div>
+        <p id="prompt-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="prompt-cancel" class="btn">Cancel</button>
+          <button id="prompt-ok" class="btn primary">OK</button>
+        </div>
+      </div>
+    </div>
 
     <script src="app.js"></script>
   </body>

@@ -10,9 +10,10 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub use core::{
-    argument_completions, parse_request, ArgumentCompletion, Branch, BranchInfo, CmdOutput, Commit,
-    CommitNode, DiffMode, EntryKind, GitClient, GitExecutor, GitRequest, Head, Rendered,
-    RenderedSection, RollbackLevel, StashAction, StashEntry, StatusEntry, StatusReport,
+    argument_completions, parse_request, ArgumentCompletion, Branch, BranchInfo, ChangedFile,
+    CmdOutput, Commit, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient, GitExecutor,
+    GitRequest, Head, LogFilter, Rendered, RenderedSection, RollbackLevel, StashAction,
+    StashEntry, StatusEntry, StatusReport, TagEntry,
 };
 
 /// Runs `git` in a directory using the host operating system.

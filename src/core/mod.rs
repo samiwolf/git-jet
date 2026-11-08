@@ -15,8 +15,9 @@ pub mod status;
 pub use client::GitClient;
 pub use log::parse_log_nodes;
 pub use model::{
-    Branch, BranchInfo, CmdOutput, Commit, CommitNode, EntryKind, GitExecutor, Head, Rendered,
-    RenderedSection, StashEntry, StatusEntry, StatusReport,
+    Branch, BranchInfo, ChangedFile, CmdOutput, Commit, CommitDetail, CommitNode, EntryKind,
+    GitExecutor, Head, LogFilter, Rendered, RenderedSection, StashEntry, StatusEntry, StatusReport,
+    TagEntry,
 };
 pub use request::{
     argument_completions, parse_request, ArgumentCompletion, DiffMode, GitRequest, RollbackLevel,

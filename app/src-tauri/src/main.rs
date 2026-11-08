@@ -9,8 +9,8 @@
 use std::sync::Mutex;
 
 use git_jet::core::{
-    Branch, CommitNode, DiffMode, EntryKind, GitClient, Head, RollbackLevel, StashEntry,
-    StatusEntry, StatusReport,
+    Branch, ChangedFile, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient, Head, LogFilter,
+    RollbackLevel, StashEntry, StatusEntry, StatusReport, TagEntry,
 };
 use git_jet::{Engine, StdExecutor};
 use serde::Serialize;
@@ -105,6 +105,9 @@ struct StatusDto {
     conflicts: Vec<FileDto>,
     stash_count: usize,
     last_commit: Option<CommitDto>,
+    merge_in_progress: bool,
+    cherry_pick_in_progress: bool,
+    revert_in_progress: bool,
 }
 
 #[derive(Serialize)]
@@ -146,6 +149,54 @@ struct StashDto {
     selector: String,
     message: String,
     date: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangedFileDto {
+    status: String,
+    path: String,
+    display_path: String,
+    orig_path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitDetailDto {
+    hash: String,
+    short_hash: String,
+    author: String,
+    email: String,
+    date: String,
+    date_iso: String,
+    subject: String,
+    parents: Vec<String>,
+    refs: Vec<String>,
+    files: Vec<ChangedFileDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TagDto {
+    name: String,
+    hash: String,
+    date: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutgoingDto {
+    commits: Vec<CommitDto>,
+    has_upstream: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchCompareDto {
+    /// Commits on HEAD that the other branch does not have.
+    ours: Vec<CommitDto>,
+    /// Commits on the other branch that HEAD does not have.
+    theirs: Vec<CommitDto>,
 }
 
 fn map_branch(branch: &Branch) -> BranchDto {
@@ -196,6 +247,9 @@ fn map_status(report: &StatusReport) -> StatusDto {
         conflicts: report.conflicts().iter().map(|e| FileDto::new(e)).collect(),
         stash_count: report.stash_count,
         last_commit: report.last_commit.as_ref().map(map_commit),
+        merge_in_progress: report.merge_in_progress,
+        cherry_pick_in_progress: report.cherry_pick_in_progress,
+        revert_in_progress: report.revert_in_progress,
     }
 }
 
@@ -260,12 +314,24 @@ fn get_status(state: State<AppState>) -> Result<StatusDto, String> {
 fn get_log(
     count: Option<u32>,
     all: Option<bool>,
+    text: Option<String>,
+    author: Option<String>,
+    path: Option<String>,
     state: State<AppState>,
 ) -> Result<Vec<CommitNodeDto>, String> {
     let count = count.unwrap_or(100).max(1).min(500) as usize;
     let all = all.unwrap_or(false);
+    let text = text.map(|value| value.trim().to_string()).filter(|v| !v.is_empty());
+    let author = author.map(|value| value.trim().to_string()).filter(|v| !v.is_empty());
+    let path = path.map(|value| value.trim().to_string()).filter(|v| !v.is_empty());
+    let filter = LogFilter {
+        text,
+        author,
+        path,
+        branch: None,
+    };
     with_engine(&state, |client| {
-        let nodes = client.log_nodes(count, all)?;
+        let nodes = client.log_nodes(count, all, &filter)?;
         Ok(nodes
             .into_iter()
             .map(|node: CommitNode| CommitNodeDto {
@@ -459,6 +525,241 @@ fn push(state: State<AppState>) -> Result<String, String> {
     with_engine(&state, |client| client.push())
 }
 
+#[tauri::command]
+fn pull_options(
+    remote: Option<String>,
+    branch: Option<String>,
+    ff_only: Option<bool>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    with_engine(&state, |client| {
+        client.pull_with_options(
+            remote.as_deref(),
+            branch.as_deref(),
+            ff_only.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn push_options(
+    remote: Option<String>,
+    branch: Option<String>,
+    force: Option<bool>,
+    set_upstream: Option<bool>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    with_engine(&state, |client| {
+        client.push_with_options(
+            remote.as_deref(),
+            branch.as_deref(),
+            force.unwrap_or(false),
+            set_upstream.unwrap_or(false),
+        )
+    })
+}
+
+#[tauri::command]
+fn outgoing(state: State<AppState>) -> Result<OutgoingDto, String> {
+    with_engine(&state, |client| {
+        let (commits, has_upstream) = client.outgoing_commits(200)?;
+        Ok(OutgoingDto {
+            commits: commits.iter().map(map_commit).collect(),
+            has_upstream,
+        })
+    })
+}
+
+#[tauri::command]
+fn merge_branch(
+    branch: Option<String>,
+    no_ff: Option<bool>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let branch = branch.ok_or_else(|| "A branch name is required.".to_string())?;
+    with_engine(&state, |client| client.merge_branch(&branch, no_ff.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn merge_abort(state: State<AppState>) -> Result<String, String> {
+    with_engine(&state, |client| client.merge_abort())
+}
+
+#[tauri::command]
+fn delete_branch(name: Option<String>, force: Option<bool>, state: State<AppState>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A branch name is required.".to_string())?;
+    with_engine(&state, |client| client.delete_branch(&name, force.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn delete_remote_branch(name: Option<String>, state: State<AppState>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A remote branch name is required.".to_string())?;
+    with_engine(&state, |client| client.delete_remote_branch(&name))
+}
+
+#[tauri::command]
+fn rename_branch(
+    old_name: Option<String>,
+    new_name: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let old_name = old_name.ok_or_else(|| "The old branch name is required.".to_string())?;
+    let new_name = new_name.ok_or_else(|| "The new branch name is required.".to_string())?;
+    with_engine(&state, |client| client.rename_branch(&old_name, &new_name))
+}
+
+#[tauri::command]
+fn checkout_new_branch(
+    name: Option<String>,
+    from_ref: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A branch name is required.".to_string())?;
+    let from_ref = from_ref.ok_or_else(|| "A start ref is required.".to_string())?;
+    with_engine(&state, |client| client.checkout_new_branch_from(&name, &from_ref))
+}
+
+#[tauri::command]
+fn set_upstream(
+    branch: Option<String>,
+    upstream: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let upstream = upstream.ok_or_else(|| "An upstream branch is required.".to_string())?;
+    with_engine(&state, |client| client.set_upstream(branch.as_deref(), &upstream))
+}
+
+#[tauri::command]
+fn unset_upstream(branch: Option<String>, state: State<AppState>) -> Result<String, String> {
+    with_engine(&state, |client| client.unset_upstream(branch.as_deref()))
+}
+
+#[tauri::command]
+fn compare_branch(branch: Option<String>, state: State<AppState>) -> Result<BranchCompareDto, String> {
+    let branch = branch.ok_or_else(|| "A branch name is required.".to_string())?;
+    with_engine(&state, |client| {
+        let (ours, theirs) = client.branch_compare(&branch)?;
+        Ok(BranchCompareDto {
+            ours: ours.iter().map(map_commit).collect(),
+            theirs: theirs.iter().map(map_commit).collect(),
+        })
+    })
+}
+
+#[tauri::command]
+fn get_tags(state: State<AppState>) -> Result<Vec<TagDto>, String> {
+    with_engine(&state, |client| {
+        let tags: Vec<TagEntry> = client.list_tags()?;
+        Ok(tags
+            .into_iter()
+            .map(|tag| TagDto {
+                name: tag.name,
+                hash: tag.hash,
+                date: tag.date,
+            })
+            .collect())
+    })
+}
+
+#[tauri::command]
+fn create_tag(
+    name: Option<String>,
+    rev: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A tag name is required.".to_string())?;
+    with_engine(&state, |client| client.create_tag(&name, rev.as_deref()))
+}
+
+#[tauri::command]
+fn delete_tag(name: Option<String>, state: State<AppState>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A tag name is required.".to_string())?;
+    with_engine(&state, |client| client.delete_tag(&name))
+}
+
+#[tauri::command]
+fn push_tags(state: State<AppState>) -> Result<String, String> {
+    with_engine(&state, |client| client.push_tags())
+}
+
+#[tauri::command]
+fn revert_commit(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    with_engine(&state, |client| client.revert_commit(&sha))
+}
+
+#[tauri::command]
+fn cherry_pick(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    with_engine(&state, |client| client.cherry_pick_commit(&sha))
+}
+
+#[tauri::command]
+fn drop_commit(sha: Option<String>, state: State<AppState>) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    with_engine(&state, |client| client.drop_commit(&sha))
+}
+
+#[tauri::command]
+fn undo_commit(state: State<AppState>) -> Result<String, String> {
+    with_engine(&state, |client| client.undo_head_commit())
+}
+
+#[tauri::command]
+fn reset_branch(
+    sha: Option<String>,
+    mode: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    if sha.is_empty() || sha.starts_with('-') {
+        return Err(format!("Invalid revision `{sha}`."));
+    }
+    with_engine(&state, |client| {
+        client.reset_branch(&sha, mode.as_deref().unwrap_or("mixed"))
+    })
+}
+
+#[tauri::command]
+fn commit_detail(sha: Option<String>, state: State<AppState>) -> Result<CommitDetailDto, String> {
+    let sha = sha.unwrap_or_else(|| "HEAD".to_string());
+    with_engine(&state, |client| {
+        let detail: CommitDetail = client.commit_detail(&sha)?;
+        Ok(CommitDetailDto {
+            hash: detail.hash.clone(),
+            short_hash: detail.short_hash.clone(),
+            author: detail.author.clone(),
+            email: detail.email.clone(),
+            date: detail.date.clone(),
+            date_iso: detail.date_iso.clone(),
+            subject: detail.subject.clone(),
+            parents: detail.parents.clone(),
+            refs: detail.refs.clone(),
+            files: detail
+                .files
+                .iter()
+                .map(|file: &ChangedFile| ChangedFileDto {
+                    status: file.status.clone(),
+                    path: file.path.clone(),
+                    display_path: file.display(),
+                    orig_path: file.orig_path.clone(),
+                })
+                .collect(),
+        })
+    })
+}
+
+#[tauri::command]
+fn commit_file_diff(
+    sha: Option<String>,
+    path: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    let path = path.ok_or_else(|| "A file path is required.".to_string())?;
+    with_engine(&state, |client| client.commit_file_diff(&sha, &path))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -487,7 +788,30 @@ fn main() {
             stash_apply,
             fetch,
             pull,
+            pull_options,
             push,
+            push_options,
+            outgoing,
+            merge_branch,
+            merge_abort,
+            delete_branch,
+            delete_remote_branch,
+            rename_branch,
+            checkout_new_branch,
+            set_upstream,
+            unset_upstream,
+            compare_branch,
+            get_tags,
+            create_tag,
+            delete_tag,
+            push_tags,
+            revert_commit,
+            cherry_pick,
+            drop_commit,
+            undo_commit,
+            reset_branch,
+            commit_detail,
+            commit_file_diff,
             checkout_commit,
         ])
         .run(tauri::generate_context!())
