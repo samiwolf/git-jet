@@ -1024,13 +1024,13 @@ function renderLog(commits) {
         },
         { sep: true },
         ...(isMerge ? [] : [
-          { label: "Cherry-pick commit", run: () => historyAction("Cherry-pick", () =>
-              invoke("cherry_pick", { sha: commit.hash }), "the current branch") },
-          { label: "Revert commit", run: () => historyAction("Revert commit", () =>
-              invoke("revert_commit", { sha: commit.hash }), "a new inverse commit") },
+          { label: "Cherry-pick commit", run: () =>
+            runHistoryAction("Cherry-pick", () => invoke("cherry_pick", { sha: commit.hash })) },
+          { label: "Revert commit", run: () =>
+            runHistoryAction("Revert commit", () => invoke("revert_commit", { sha: commit.hash })) },
         ]),
         ...(isHead && !isMerge
-          ? [{ label: "Undo commit (changes back in editor)", run: () => confirmUndoCommit(commit) }]
+          ? [{ label: "Undo commit (changes back to working tree)", run: () => confirmUndoCommit(commit) }]
           : []),
         { sep: true },
         ...(isMerge
@@ -1874,6 +1874,9 @@ function boot() {
         event.target.closest("#branch-button") === null) hide(branch);
     const stash = $("stash-menu");
     if (!stash.classList.contains("hidden") && !stash.parentElement.contains(event.target)) hide(stash);
+    const tags = $("tags-menu");
+    if (!tags.classList.contains("hidden") && !tags.contains(event.target) &&
+        event.target.closest("#tags-button") === null) hide(tags);
   });
   document.addEventListener("contextmenu", (event) => {
     // Keep the native menu where copying/pasting text matters.
@@ -1891,6 +1894,7 @@ function boot() {
       closeContextMenu();
       hide($("branch-menu"));
       hide($("stash-menu"));
+      hide($('tags-menu'));
     }
   });
 

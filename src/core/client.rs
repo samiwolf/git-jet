@@ -742,9 +742,59 @@ impl<E: GitExecutor> GitClient<E> {
         self.text_owned(&args)
     }
 
-    /// Push the current branch. Untracked upstreams are pushed with `-u`.
+    /// Push the current branch. With a tracked upstream a simple
+    /// `push -u HEAD` keeps the tracking; without one the branch is pushed
+    /// to the default remote by name, which creates the tracking.
     pub fn push(&mut self) -> Result<String, String> {
-        self.text_owned(&["push".to_string(), "-u".to_string(), "HEAD".to_string()])
+        if self.head_ref_exists("@{upstream}") {
+            return self.text_owned(&["push".to_string(), "-u".to_string(), "HEAD".to_string()]);
+        }
+        // Fresh clones have no `branch.<name>.remote` config yet, where
+        // `git push -u HEAD` resolves `HEAD` as a literal repository name.
+        // Fall back to the default remote (usually origin) + branch name.
+        let remote = match self.default_remote() {
+            Some(remote) => remote,
+            None => {
+                return Err(
+                    "Push needs either a tracked upstream or a configured remote."
+                        .to_string(),
+                )
+            }
+        };
+        let branch = match self.current_branch() {
+            Some(branch) => branch,
+            None => {
+                return Err(
+                    "Push needs a branch; commit inside a branch first (detached HEAD)."
+                        .to_string(),
+                )
+            }
+        };
+        self.text(&["push", "-u", remote.as_str(), branch.as_str()])
+    }
+
+    /// First configured remote name, e.g. `origin`.
+    fn default_remote(&mut self) -> Option<String> {
+        let output = self.text(&["remote"]).ok()?;
+        output
+            .lines()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .map(|line| line.to_string())
+    }
+
+    /// Current branch name; `None` while detached.
+    fn current_branch(&mut self) -> Option<String> {
+        let output = self.exec(&["branch", "--show-current"]).ok()?;
+        if !output.success() {
+            return None;
+        }
+        let name = output.stdout_lossy().trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     }
 
     /// Push with dialog options: explicit remote and branch, optional

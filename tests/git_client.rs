@@ -807,7 +807,7 @@ fn tags_flow_creates_and_deletes() {
     assert_eq!(v1.hash.len(), 7);
 
     // The tag shows up in the log decorations.
-    assert!(git(dir.path(), &["log", "--oneline", "-1"]).contains("v1.0"));
+    assert!(git(dir.path(), &["tag", "--points-at", "HEAD"]).contains("v1.0"));
 
     client.delete_tag("v0.9").unwrap();
     let tags = client.list_tags().unwrap();
@@ -842,14 +842,16 @@ fn cherry_pick_revert_undo_and_drop_modify_history() {
     client.drop_commit(&copied).unwrap();
     assert!(!dir.path().join("picked.txt").exists());
 
-    // Undo moves HEAD back to the parent; changes stay in the worktree.
+    // Undo moves HEAD back to the parent of the revert commit; the revert's
+    // changes stay in the worktree.
     client.undo_head_commit().unwrap();
-    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), base);
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), head_before_pick);
     let status = client.status().unwrap();
     assert!(
         !status.unstaged().is_empty() || !status.staged().is_empty(),
         "worktree holds the undone changes"
     );
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "base\n");
 }
 
 #[test]
@@ -859,17 +861,27 @@ fn reset_branch_modes_match_git_semantics() {
     let base = commit_change(&dir, "a.txt", "base\n", "base commit");
     commit_change(&dir, "b.txt", "added\n", "addition commit");
     write(dir.path(), "c.txt", "dirty\n");
+    git(dir.path(), &["add", "c.txt"]);
 
+    // Soft keeps index and worktree exactly as they were.
     client.reset_branch(&base, "soft").unwrap();
     assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), base);
-    assert!(git(dir.path(), &["diff", "--cached", "--name-only"]).contains("b.txt"));
+    let staged = git(dir.path(), &["diff", "--cached", "--name-only"]);
+    assert!(staged.contains("b.txt"));
+    assert!(staged.contains("c.txt"));
 
-    client.reset_branch(&base, "mixed").unwrap();
-    assert!(!git(dir.path(), &["diff", "--cached", "--name-only"]).contains("b.txt"));
-
+    // Hard wipes index and worktree: staged new files are deleted.
     client.reset_branch(&base, "hard").unwrap();
-    assert!(!dir.path().join("c.txt").exists());
     assert!(!dir.path().join("b.txt").exists());
+    assert!(!dir.path().join("c.txt").exists());
+
+    commit_change(&dir, "b.txt", "added\n", "addition commit again");
+
+    // Mixed unstages everything; files stay on disk.
+    client.reset_branch(&base, "mixed").unwrap();
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), base);
+    assert!(git(dir.path(), &["diff", "--cached", "--name-only"]).trim().is_empty());
+    assert!(dir.path().join("b.txt").exists());
 }
 
 #[test]
