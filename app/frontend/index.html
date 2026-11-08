@@ -222,6 +222,31 @@
       </div>
     </div>
 
+    <!-- Merge editor (resolve one conflicted file across three panes) -->
+    <div id="merge-dialog" class="dialog hidden">
+      <div class="dialog-card merge-card">
+        <div class="merge-head">
+          <span id="merge-path" class="merge-path"></span>
+          <span id="merge-count" class="merge-count"></span>
+          <div class="merge-head-actions">
+            <button id="merge-all-ours" class="btn small" title="Accept the current side for every conflict">Accept ours for all</button>
+            <button id="merge-all-theirs" class="btn small" title="Accept the incoming side for every conflict">Accept theirs for all</button>
+          </div>
+        </div>
+        <div class="merge-colheads">
+          <span>Current (ours)</span>
+          <span>Incoming (theirs)</span>
+          <span>Merge result</span>
+        </div>
+        <div id="merge-body" class="merge-body"></div>
+        <p id="merge-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="merge-cancel" class="btn">Cancel</button>
+          <button id="merge-apply" class="btn primary">Apply</button>
+        </div>
+      </div>
+    </div>
+
     <script src="app.js"></script>
   </body>
 </html>

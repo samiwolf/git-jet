@@ -516,6 +516,59 @@ impl<E: GitExecutor> GitClient<E> {
         Ok(output.stdout_lossy())
     }
 
+    /// Resolves a repo-relative file path for working-tree access and
+    /// rejects absolute paths and `..` escapes.
+    fn worktree_path(&mut self, path: &str) -> Result<std::path::PathBuf, String> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("A file path is required.".to_string());
+        }
+        if path.starts_with('-') {
+            return Err(format!("Invalid file path `{path}`."));
+        }
+        let relative = std::path::Path::new(path);
+        if relative.is_absolute() {
+            return Err(format!("Invalid file path `{path}`."));
+        }
+        for component in relative.components() {
+            match component {
+                std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::ParentDir => {
+                    return Err(format!("Invalid file path `{path}`."));
+                }
+                _ => {}
+            }
+        }
+        let root = self.repo_root()?;
+        Ok(std::path::Path::new(&root).join(relative))
+    }
+
+    /// Reads one file's working-tree content, relative to the repo root.
+    ///
+    /// Used by the merge editor to inspect a conflicted file together with
+    /// its `<<<<<<<`/`=======`/`>>>>>>>` markers.
+    pub fn worktree_file_content(&mut self, path: &str) -> Result<String, String> {
+        let path = path.trim();
+        let target = self.worktree_path(path)?;
+        std::fs::read_to_string(&target)
+            .map_err(|error| format!("Could not read `{path}`: {error}"))
+    }
+
+    /// Writes a resolved merge result to the working tree and stages the
+    /// file (`git add`), which marks the conflict as resolved.
+    pub fn write_merge_result(&mut self, path: &str, content: &str) -> Result<String, String> {
+        let path = path.trim();
+        let target = self.worktree_path(path)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Could not create `{path}`: {error}"))?;
+        }
+        std::fs::write(&target, content)
+            .map_err(|error| format!("Could not write `{path}`: {error}"))?;
+        self.stage(&[path.to_string()])
+    }
+
     fn run_stash(&mut self, action: &StashAction) -> Result<Rendered, String> {
         match action {
             StashAction::List => {

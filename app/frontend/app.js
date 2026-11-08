@@ -102,6 +102,9 @@ const state = {
   logFilters: { text: "", author: "", path: "" },
   commitDetail: null,   // last loaded CommitDetail DTO
   loadedStatus: null,
+  mergeFile: null,      // conflict entry open in the merge editor
+  mergeSegments: null,  // parsed conflict segments of that file
+  mergeTrailingNewline: false,
 };
 
 const ROLLBACK_LABEL = {
@@ -418,6 +421,7 @@ function selectFileRow(entry, section, row) {
 function showFileContextMenu(event, entry, section, row) {
   const items = [{ head: entry.displayPath }];
   if (section === "conflict") {
+    items.push({ label: "Resolve in merge editor…", run: () => openMergeEditor(entry) });
     items.push({ label: "Stage (mark resolved)", hint: "→", run: () =>
       runAction("Stage file", () => invoke("stage", { paths: [entry.path] })) });
   } else if (section === "staged") {
@@ -569,6 +573,10 @@ function rows() {
           node.classList.add("selected");
           state.selectedFile = { entry, section };
           state.selectedCommit = null;
+          if (section === "conflict") {
+            openMergeEditor(entry);
+            return;
+          }
           switchTab("diff");
           loadDiff();
         });
@@ -1231,6 +1239,11 @@ function promptDialog(title, placeholder, initial, mode, onSubmit) {
 }
 
 function closeDialogs() {
+  // The merge editor confirms with the user while conflicts are unresolved.
+  if (!$("merge-dialog").classList.contains("hidden")) {
+    closeMergeEditor();
+    return;
+  }
   for (const id of ["pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog"]) {
     hide($(id));
   }
@@ -1295,6 +1308,208 @@ async function createTagAt(commit) {
     await refreshTags();
     await refreshLog(false);
   });
+}
+
+/* ------------------------------------------------------------- merge editor */
+
+const MERGE_MARKER = {
+  start: /^<{7}/,
+  base: /^\|{7}/,
+  sep: /^\={7}/,
+  end: /^>{7}/,
+};
+
+/* Splits worktree content into segments from the merge markers:
+   {kind:"common", lines} and {kind:"conflict", ours[], base[], theirs[], choice}. */
+function parseConflictSegments(content) {
+  const lines = content.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const segments = [];
+  let common = null;
+  let block = null;
+  const flush = () => {
+    if (common) {
+      segments.push({ kind: "common", lines: common });
+      common = null;
+    }
+  };
+  for (const line of lines) {
+    if (block) {
+      if (block.side === "ours") {
+        if (MERGE_MARKER.base.test(line)) block.side = "base";
+        else if (MERGE_MARKER.sep.test(line)) block.side = "theirs";
+        else block.ours.push(line);
+      } else if (block.side === "base") {
+        if (MERGE_MARKER.sep.test(line)) block.side = "theirs";
+        else block.base.push(line);
+      } else if (MERGE_MARKER.end.test(line)) {
+        segments.push({ kind: "conflict", ours: block.ours, base: block.base, theirs: block.theirs, choice: null });
+        block = null;
+      } else {
+        block.theirs.push(line);
+      }
+    } else if (MERGE_MARKER.start.test(line)) {
+      flush();
+      block = { ours: [], base: [], theirs: [], side: "ours" };
+    } else {
+      (common = common || []).push(line);
+    }
+  }
+  // Git cuts off unterminated markers (e.g. checkout -m edge cases); keep
+  // what we parsed rather than losing the content.
+  if (block) {
+    segments.push({ kind: "conflict", ours: block.ours, base: block.base, theirs: block.theirs, choice: null });
+  }
+  flush();
+  return segments;
+}
+
+function mergeSegmentLines(segment) {
+  if (segment.kind === "common") return segment.lines;
+  if (!segment.choice) return null;
+  return segment.choice === "ours" ? segment.ours : segment.theirs;
+}
+
+function mergeUnresolved() {
+  if (!state.mergeSegments) return 0;
+  return state.mergeSegments.filter((s) => s.kind === "conflict" && !s.choice).length;
+}
+
+/* The result being applied: fully joined when every conflict is resolved,
+   null while any is left open. */
+function mergeResolvedContent() {
+  if (!state.mergeSegments) return null;
+  const lines = [];
+  for (const segment of state.mergeSegments) {
+    const scoped = mergeSegmentLines(segment);
+    if (scoped === null) return null;
+    lines.push(...scoped);
+  }
+  const text = lines.join("\n");
+  return state.mergeTrailingNewline ? text + "\n" : text;
+}
+
+function openMergeEditor(entry) {
+  invoke("get_worktree_file", { file: entry.path })
+    .then((content) => {
+      state.mergeFile = entry;
+      state.mergeTrailingNewline = content.endsWith("\n");
+      state.mergeSegments = parseConflictSegments(content);
+      $("merge-path").textContent = entry.displayPath;
+      $("merge-error").textContent = "";
+      renderMergeEditor();
+      show($("merge-dialog"));
+    })
+    .catch((error) => setStatus(`Open merge editor failed: ${errorText(error)}`, true));
+}
+
+function mergeLine(num, text, cls) {
+  const line = el("div", "merge-line" + (cls ? ` ${cls}` : ""));
+  line.append(el("span", "merge-num", String(num)), el("span", "merge-text", text));
+  return line;
+}
+
+function mergeButton(label, run) {
+  const button = el("button", "btn small", label);
+  button.addEventListener("click", run);
+  return button;
+}
+
+/* One grid row per segment keeps all three panes aligned; scrolling the
+   body scrolls them together, like JetBrains' merged-result layout. */
+function renderMergeEditor() {
+  const body = $("merge-body");
+  body.replaceChildren();
+  let oursNo = 1;
+  let theirsNo = 1;
+  let resultNo = 1;
+  for (const segment of state.mergeSegments) {
+    const row = el("div", "merge-row");
+    const left = el("div", "merge-cell");
+    const right = el("div", "merge-cell");
+    const result = el("div", "merge-cell merge-result");
+    if (segment.kind === "common") {
+      for (const text of segment.lines) {
+        left.append(mergeLine(oursNo++, text, "merge-ctx"));
+        right.append(mergeLine(theirsNo++, text, "merge-ctx"));
+        result.append(mergeLine(resultNo++, text, ""));
+      }
+    } else {
+      const resolved = mergeSegmentLines(segment);
+      for (const text of segment.ours) left.append(mergeLine(oursNo++, text, "merge-ours"));
+      for (const text of segment.theirs) right.append(mergeLine(theirsNo++, text, "merge-theirs"));
+      if (resolved === null) {
+        const bar = el("div", "merge-resolve");
+        bar.append(
+          el("span", "merge-resolve-hint", "unresolved"),
+          mergeButton("◀ Accept ours", () => chooseSegment(segment, "ours")),
+          mergeButton("Accept theirs ▶", () => chooseSegment(segment, "theirs"))
+        );
+        result.append(bar);
+        result.append(el("div", "merge-unresolved", "Choose a version to place it here."));
+      } else {
+        for (const text of resolved) {
+          result.append(mergeLine(resultNo++, text, `merge-chosen ${segment.choice}`));
+        }
+        const undo = mergeButton("⟲", () => chooseSegment(segment, null));
+        undo.classList.add("merge-undo");
+        undo.title = `Reset choice (currently ${segment.choice})`;
+        result.append(undo);
+      }
+    }
+    row.append(left, right, result);
+    body.append(row);
+  }
+  const unresolved = mergeUnresolved();
+  const pill = $("merge-count");
+  pill.textContent = unresolved === 0 ? "all conflict(s) resolved" : `${unresolved} unresolved`;
+  pill.classList.toggle("ok", unresolved === 0);
+  $("merge-apply").disabled = unresolved > 0;
+}
+
+function chooseSegment(segment, choice) {
+  segment.choice = choice;
+  renderMergeEditor();
+}
+
+function acceptAllMerge(choice) {
+  if (!state.mergeSegments) return;
+  for (const segment of state.mergeSegments) {
+    if (segment.kind === "conflict") segment.choice = choice;
+  }
+  renderMergeEditor();
+}
+
+function closeMergeEditor() {
+  if ($("merge-dialog").classList.contains("hidden")) return;
+  const unresolved = mergeUnresolved();
+  if (unresolved > 0 &&
+      !confirm(`Leave the merge editor?\n\n${unresolved} conflict(s) unresolved — nothing has been written or staged yet.`)) {
+    return;
+  }
+  hide($("merge-dialog"));
+  state.mergeFile = null;
+  state.mergeSegments = null;
+}
+
+async function applyMergeResult() {
+  const content = mergeResolvedContent();
+  if (content === null) {
+    $("merge-error").textContent = "Conflicts remain unresolved — accept a version for every block first.";
+    return;
+  }
+  const entry = state.mergeFile;
+  try {
+    await invoke("write_merge_result", { file: entry.path, content });
+    hide($("merge-dialog"));
+    state.mergeFile = null;
+    state.mergeSegments = null;
+    setStatus(`Resolved ${entry.displayPath} — ready to commit.`);
+    await Promise.all([refreshStatus(), refreshLog(false), refreshBranches()]);
+  } catch (error) {
+    $("merge-error").textContent = errorText(error);
+    setStatus(`Apply merge failed: ${errorText(error)}`, true);
+  }
 }
 
 /* ------------------------------------------------------ merge / branch ops */
@@ -1781,6 +1996,12 @@ function boot() {
   $("push-ok").addEventListener("click", submitPushDialog);
   $("compare-close").addEventListener("click", () => hide($("compare-dialog")));
   $("prompt-cancel").addEventListener("click", () => hide($("prompt-dialog")));
+
+  /* merge editor */
+  $("merge-cancel").addEventListener("click", closeMergeEditor);
+  $("merge-apply").addEventListener("click", () => void applyMergeResult());
+  $("merge-all-ours").addEventListener("click", () => acceptAllMerge("ours"));
+  $("merge-all-theirs").addEventListener("click", () => acceptAllMerge("theirs"));
   $("prompt-ok").addEventListener("click", () => {
     const handler = promptHandler;
     if (handler) handler();

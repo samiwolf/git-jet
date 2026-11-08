@@ -442,6 +442,23 @@ fn discard_hunk(
 }
 
 #[tauri::command]
+fn get_worktree_file(file: Option<String>, state: State<AppState>) -> Result<String, String> {
+    let file = file.ok_or_else(|| "A file path is required.".to_string())?;
+    with_engine(&state, |client| client.worktree_file_content(&file))
+}
+
+#[tauri::command]
+fn write_merge_result(
+    file: Option<String>,
+    content: Option<String>,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let file = file.ok_or_else(|| "A file path is required.".to_string())?;
+    let content = content.ok_or_else(|| "The merged content is required.".to_string())?;
+    with_engine(&state, |client| client.write_merge_result(&file, &content))
+}
+
+#[tauri::command]
 fn commit(
     message: Option<String>,
     amend: Option<bool>,
@@ -794,6 +811,8 @@ fn main() {
             outgoing,
             merge_branch,
             merge_abort,
+            get_worktree_file,
+            write_merge_result,
             delete_branch,
             delete_remote_branch,
             rename_branch,

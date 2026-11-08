@@ -768,6 +768,54 @@ fn merge_abort_without_a_started_merge_fails() {
 }
 
 #[test]
+fn merge_editor_reads_and_resolves_a_conflicted_file() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    git(dir.path(), &["switch", "-q", "-c", "conflict"]);
+    commit_change(&dir, "a.txt", "branch side\n", "branch side changed");
+    git(dir.path(), &["switch", "-q", "main"]);
+    write(dir.path(), "a.txt", "main side\n");
+    git(dir.path(), &["add", "a.txt"]);
+    git(dir.path(), &["commit", "-q", "-m", "main side changed"]);
+    client.merge_branch("conflict", false).unwrap_err();
+
+    // The conflicted worktree file carries the merge markers.
+    let content = client.worktree_file_content("a.txt").unwrap();
+    assert!(content.contains("<<<<<<<"), "{content}");
+    assert!(content.contains(">>>>>>>"), "{content}");
+
+    // Absolute paths and `..` escapes stay inside the repo root.
+    assert!(
+        client
+            .worktree_file_content("../outside.txt")
+            .unwrap_err()
+            .contains("Invalid"),
+        "should reject parent traversal"
+    );
+    assert!(
+        client
+            .worktree_file_content(dir.path().join("a.txt").to_string_lossy().as_ref())
+            .unwrap_err()
+            .contains("Invalid"),
+        "should reject absolute paths"
+    );
+
+    // Writing a resolution stages the file and clears the conflict.
+    client.write_merge_result("a.txt", "resolved!\n").unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "resolved!\n"
+    );
+    let report = client.status().unwrap();
+    assert!(
+        report.conflicts().is_empty(),
+        "resolution marks the file resolved"
+    );
+    assert_eq!(report.staged().len(), 1, "the resolved file is staged");
+}
+
+#[test]
 fn commit_detail_lists_files_and_per_file_diffs() {
     let dir = init_repo();
     let mut client = client(&dir);
