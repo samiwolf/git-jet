@@ -1,0 +1,12 @@
+{
+  "name": "git-jet",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A JetBrains-style Git tool: standalone desktop application",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

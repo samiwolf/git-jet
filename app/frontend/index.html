@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Git Jet</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="boot-error" class="boot-error"></div>
+    <div id="empty-state" class="empty-state">
+      <div class="empty-card">
+        <div class="empty-logo">Git<span class="accent">Jet</span></div>
+        <p class="empty-title">Open a Git repository to get started</p>
+        <div class="empty-row">
+          <input id="repo-path" class="text-input" placeholder="…or paste a repository path" />
+          <button id="open-path-btn" class="btn">Open</button>
+        </div>
+        <button id="open-folder-btn" class="btn primary">Browse Folders…</button>
+        <p id="empty-error" class="empty-error hidden"></p>
+      </div>
+    </div>
+
+    <div id="app" class="app">
+      <header class="toolbar">
+        <button id="branch-button" class="btn branch-button" title="Switch branches">
+          <span class="branch-ico">⑂</span>
+          <span id="branch-label">…</span>
+        </button>
+
+        <div class="toolbar-sep"></div>
+
+        <button id="fetch-btn" class="btn">Fetch ⮁ All</button>
+        <button id="pull-btn" class="btn">Pull</button>
+        <button id="push-btn" class="btn">Push</button>
+
+        <div class="toolbar-sep"></div>
+
+        <div class="dropdown-wrap">
+          <button id="stash-button" class="btn">Stash ▾</button>
+          <div id="stash-menu" class="dropdown hidden">
+            <div class="dropdown-row">
+              <input id="stash-message" class="text-input" placeholder="Stash message (optional)" />
+              <button id="stash-push-btn" class="btn small">Push</button>
+            </div>
+            <div id="stash-list" class="stash-list"></div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <button id="refresh-btn" class="btn" title="Refresh (F5)">⟳</button>
+        <button id="switch-repo-btn" class="btn" title="Open another repository">📂</button>
+      </header>
+
+      <div class="work-area">
+        <aside class="changes-panel">
+          <div class="panel-header">
+            <span class="panel-title">Local Changes</span>
+          </div>
+          <div id="branch-bar" class="branch-bar"></div>
+          <div id="changes-list" class="changes-list"></div>
+          <div class="commit-bar">
+            <textarea id="commit-message" class="commit-message" rows="3"
+              placeholder="Commit message…"></textarea>
+            <div class="commit-actions">
+              <label class="amend-label" title="Amend the last commit instead of creating a new one">
+                <input type="checkbox" id="amend-check" /> Amend
+              </label>
+              <button id="commit-btn" class="btn primary">Commit</button>
+            </div>
+          </div>
+        </aside>
+
+        <div class="main-panel">
+          <div class="tabs">
+            <button class="tab active" data-tab="log">Log</button>
+            <button class="tab" data-tab="diff">Diff</button>
+          </div>
+          <section id="tab-log" class="tab-view">
+            <div class="log-toolbar">
+              <label><input type="checkbox" id="log-all" /> All branches</label>
+              <button id="load-more-btn" class="btn small hidden">Load more</button>
+            </div>
+            <div id="log-list" class="log-list"></div>
+          </section>
+          <section id="tab-diff" class="tab-view hidden">
+            <div class="diff-toolbar">
+              <div class="diff-mode">
+                <button class="tab flat active" data-mode="all">All</button>
+                <button class="tab flat" data-mode="unstaged">Unstaged</button>
+                <button class="tab flat" data-mode="staged">Staged</button>
+              </div>
+              <span id="diff-subject" class="diff-subject"></span>
+            </div>
+            <div id="diff-view" class="diff-view"></div>
+          </section>
+        </div>
+      </div>
+
+      <footer id="status-bar" class="status-bar">
+        <span id="status-text">Ready</span>
+        <span class="spacer"></span>
+        <span id="status-repo" class="muted"></span>
+      </footer>
+    </div>
+
+    <div id="branch-menu" class="dropdown hidden">
+      <div class="dropdown-row">
+        <input id="new-branch-name" class="text-input" placeholder="New branch name…" />
+        <button id="create-branch-btn" class="btn small">Create</button>
+      </div>
+      <div id="local-branches" class="branch-list"></div>
+      <div class="dropdown-head">Remote</div>
+      <div id="remote-branches" class="branch-list"></div>
+    </div>
+
+    <div id="context-menu" class="dropdown context-menu hidden"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
