@@ -18,6 +18,14 @@ Windows, macOS and Linux, built with [Tauri](https://tauri.app).
   per-file staging and one-click "stage all". Every file outside of conflicts
   also has a one-click rollback (↩). While a merge is being resolved an
   **Abort merge** banner offers an escape hatch.
+- **Merge editor** — clicking a conflicted file opens a JetBrains-style,
+  three-pane dialog: current revision (ours) left, incoming (theirs) right
+  and the merge result below, all aligned and scrolling together. Each
+  conflict block offers "Accept ours"/"Accept theirs" (plus an undo chip on
+  the choice), the header has bulk buttons for every block and a live
+  "N unresolved" counter, and **Apply** writes the resolved file and stages
+  it — disabled while any conflict is open. Cancel (Esc inside the dialog)
+  leaves the merge untouched and warns first.
 - **Log** — a colored commit graph with branch, tag and `HEAD` ref badges;
   "load more" pagination and an "all branches" toggle. Filters narrow the
   graph by message text, author (case-insensitive) and path, all executed by
@@ -99,11 +107,15 @@ commit messages with spaces or quotes are safe. History comes from
 ## Permissions and safety
 
 - No shell is involved in any git invocation.
-- Read-only commands: status, log, diff, branches, stashes, show, blame.
+- Read-only commands: status, log, diff, branches, stashes, show, blame,
+  reading a conflicted file's worktree content.
 - Worktree-changing commands: stage, unstage, rollback (restore / checkout,
   `git clean -fd` for untracked, `git apply -R` for hunks), commit, switch,
-  new-branch, stash push/pop/apply/drop, pull.
+  new-branch, stash push/pop/apply/drop, pull, and writing a resolved merge
+  result (+ `git add` on that one file).
 - Network commands: fetch, pull, push.
+- File writes are confined to the opened repository: paths are resolved
+  against the repo root and `..`/absolute escapes are rejected.
 - No telemetry, and no network access other than the Git commands you run.
 
 ## Tests
@@ -118,7 +130,8 @@ branch / stash parsing including the graph format with parents and ref
 decorations, rendering, and integration tests that create real repositories
 and exercise status, diffs, staging, commits, amend, branches, switches,
 stashes, blame, file- and hunk-wise rollback, repository-error handling,
-merge + conflict detection + abort, commit details with per-file diffs,
+merge + conflict detection + abort + the three-pane resolve round trip
+(read, resolve, stage), commit details with per-file diffs,
 tags, cherry-pick / revert / drop / undo, soft/mixed/hard resets, log
 filters and push/outgoing flows against a local bare remote.
 
