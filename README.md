@@ -30,7 +30,13 @@ Windows, macOS and Linux, built with [Tauri](https://tauri.app).
   "load more" pagination and an "all branches" toggle. Filters narrow the
   graph by message text, author (case-insensitive) and path, all executed by
   git itself. Right-click a commit to cherry-pick, revert, drop, undo,
-  reset the branch to it or create a tag.
+  reword its message, squash it into its parent, reset the branch to it or
+  create a tag. Rewrites use git plumbing (`hash-object` + `update-ref` with
+  a compare-and-swap), so they preserve merges, never move the working tree
+  and keep authors intact.
+- **Incoming commits** — the `↓ N` pill in the branch bar (and the context
+  menu) lists what a pull would bring in (`HEAD..@{upstream}`) after a
+  fetch, with a pull shortcut.
 - **Commit details** — selecting a commit shows a metadata line (author,
   date, hash, ref badges, merge marker) plus the list of changed files;
   clicking a file loads its patch alone.
@@ -49,6 +55,12 @@ Windows, macOS and Linux, built with [Tauri](https://tauri.app).
   and an optional explicit remote/branch; the push dialog lists the outgoing
   commits first, allows an explicit remote/target branch and offers set-upstream
   and force-push (`--force-with-lease`).
+- **Remotes** — a manage-remotes dialog to add a remote, edit its URL, fetch
+  a single remote and remove it (with confirmation). The start screen clones
+  a repository from a URL into a picked destination folder and opens it.
+- **.gitignore** — untracked files gain an "Add to .gitignore" context-menu
+  action (also for the whole Untracked section); patterns are deduplicated
+  and `!`/`#` prefixes are escaped.
 - **Tags** — a toolbar menu to list, create (at HEAD or any ref), delete and
   push tags.
 - **Stashes** — push (with an optional message), pop, apply and drop.
@@ -108,12 +120,16 @@ commit messages with spaces or quotes are safe. History comes from
 
 - No shell is involved in any git invocation.
 - Read-only commands: status, log, diff, branches, stashes, show, blame,
-  reading a conflicted file's worktree content.
+  remotes, reading a conflicted file's worktree content.
 - Worktree-changing commands: stage, unstage, rollback (restore / checkout,
   `git clean -fd` for untracked, `git apply -R` for hunks), commit, switch,
   new-branch, stash push/pop/apply/drop, pull, and writing a resolved merge
   result (+ `git add` on that one file).
-- Network commands: fetch, pull, push.
+- History rewrites (reword, squash into parent) go through `git
+  hash-object`/`rev-list`/`update-ref` plumbing and never touch the index or
+  working tree; the branch ref only moves when the rewritten tip has the
+  identical tree.
+- Network commands: fetch, pull, push, clone.
 - File writes are confined to the opened repository: paths are resolved
   against the repo root and `..`/absolute escapes are rejected.
 - No telemetry, and no network access other than the Git commands you run.
@@ -133,7 +149,9 @@ stashes, blame, file- and hunk-wise rollback, repository-error handling,
 merge + conflict detection + abort + the three-pane resolve round trip
 (read, resolve, stage), commit details with per-file diffs,
 tags, cherry-pick / revert / drop / undo, soft/mixed/hard resets, log
-filters and push/outgoing flows against a local bare remote.
+filters, push/outgoing flows against a local bare remote, remote management
+(add / set-url / fetch / remove), incoming commits, cloning, .gitignore
+edits and squash-into-parent / reword history rewrites.
 
 ## License
 

@@ -330,6 +330,16 @@ pub struct TagEntry {
     pub date: String,
 }
 
+/// One configured remote, from `git remote -v`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEntry {
+    pub name: String,
+    /// URL used by fetch, e.g. `https://host/user/repo.git`.
+    pub fetch_url: String,
+    /// URL used by push. Usually identical to `fetch_url`.
+    pub push_url: String,
+}
+
 /// Optional filters for the commit log.
 ///
 /// Every field is matched by `git log` itself, so large repositories stay

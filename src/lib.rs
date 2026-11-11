@@ -18,10 +18,10 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub use core::{
-    argument_completions, parse_request, ArgumentCompletion, Branch, BranchInfo, ChangedFile,
-    CmdOutput, Commit, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient, GitExecutor,
-    GitRequest, Head, LogFilter, Rendered, RenderedSection, RollbackLevel, StashAction,
-    StashEntry, StatusEntry, StatusReport, TagEntry,
+    argument_completions, clone_repository, parse_request, ArgumentCompletion, Branch, BranchInfo,
+    ChangedFile, CmdOutput, Commit, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient,
+    GitExecutor, GitRequest, Head, LogFilter, RemoteEntry, Rendered, RenderedSection,
+    RollbackLevel, StashAction, StashEntry, StatusEntry, StatusReport, TagEntry,
 };
 
 /// Builds a `git` invocation with the shared arguments every command uses.

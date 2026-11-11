@@ -12,12 +12,12 @@ pub mod render;
 pub mod request;
 pub mod status;
 
-pub use client::GitClient;
+pub use client::{clone_repository, GitClient};
 pub use log::parse_log_nodes;
 pub use model::{
     Branch, BranchInfo, ChangedFile, CmdOutput, Commit, CommitDetail, CommitNode, EntryKind,
-    GitExecutor, Head, LogFilter, Rendered, RenderedSection, StashEntry, StatusEntry, StatusReport,
-    TagEntry,
+    GitExecutor, Head, LogFilter, RemoteEntry, Rendered, RenderedSection, StashEntry, StatusEntry,
+    StatusReport, TagEntry,
 };
 pub use request::{
     argument_completions, parse_request, ArgumentCompletion, DiffMode, GitRequest, RollbackLevel,

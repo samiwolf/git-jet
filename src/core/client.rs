@@ -2,8 +2,8 @@
 
 use super::log::{parse_branches, parse_log_nodes, parse_log_records, parse_raw_entries, parse_stashes, parse_tags};
 use super::model::{
-    CmdOutput, Commit, CommitDetail, CommitNode, GitExecutor, LogFilter, Rendered, StashEntry,
-    StatusReport, TagEntry,
+    CmdOutput, Commit, CommitDetail, CommitNode, GitExecutor, LogFilter, RemoteEntry, Rendered,
+    StashEntry, StatusReport, TagEntry,
 };
 use super::render;
 use super::request::{DiffMode, GitRequest, RollbackLevel, StashAction};
@@ -1117,6 +1117,373 @@ impl<E: GitExecutor> GitClient<E> {
         self.text(&["push", "--tags"])
     }
 
+    /// All configured remotes with their fetch and push URLs (`git remote -v`).
+    pub fn list_remotes(&mut self) -> Result<Vec<RemoteEntry>, String> {
+        let output = self.text(&["remote", "--verbose"])?;
+        Ok(parse_remotes(&output))
+    }
+
+    /// Register a new remote (`git remote add <name> <url>`).
+    pub fn add_remote(&mut self, name: &str, url: &str) -> Result<String, String> {
+        let (name, url) = validate_remote(name, url)?;
+        self.text(&["remote", "add", name.as_str(), url.as_str()])
+    }
+
+    /// Replace a remote's fetch and push URL (`git remote set-url`).
+    pub fn set_remote_url(&mut self, name: &str, url: &str) -> Result<String, String> {
+        let (name, url) = validate_remote(name, url)?;
+        self.text(&["remote", "set-url", name.as_str(), url.as_str()])
+    }
+
+    /// Unregister a remote (`git remote remove <name>`). Remote-tracking
+    /// branches of that remote are removed by git as well.
+    pub fn remove_remote(&mut self, name: &str) -> Result<String, String> {
+        let (name, _) = validate_remote(name, "url")?;
+        self.text(&["remote", "remove", name.as_str()])
+    }
+
+    /// Fetch one specific remote (`git fetch <name>`).
+    pub fn fetch_remote(&mut self, name: &str) -> Result<String, String> {
+        let (name, _) = validate_remote(name, "url")?;
+        self.text(&["fetch", name.as_str()])
+    }
+
+    /// Commits the upstream has that the current branch does not:
+    /// `HEAD..@{upstream}`. Returns `(commits, has_upstream)`.
+    pub fn incoming_commits(&mut self, limit: usize) -> Result<(Vec<Commit>, bool), String> {
+        if !self.has_head()? {
+            return Ok((Vec::new(), false));
+        }
+        if !self.head_ref_exists("@{upstream}") {
+            return Ok((Vec::new(), false));
+        }
+        let commits = self.log_first_level(limit, "HEAD..@{upstream}")?;
+        Ok((commits, true))
+    }
+
+    /// Append ignore patterns to the repository `.gitignore` (created when
+    /// missing). Patterns already present are skipped, so the call is
+    /// idempotent.
+    pub fn add_to_gitignore(&mut self, paths: &[String]) -> Result<String, String> {
+        if paths.is_empty() {
+            return Err("At least one path is required.".to_string());
+        }
+        let mut patterns = Vec::with_capacity(paths.len());
+        for value in paths {
+            let value = value.trim().replace('\\', "/");
+            if value.is_empty() || value.starts_with('-') {
+                return Err(format!("Invalid path `{value}`."));
+            }
+            patterns.push(escape_gitignore_pattern(&value));
+        }
+        let gitignore = self.worktree_path(".gitignore")?;
+        let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+        let mut have: Vec<String> = existing.lines().map(|line| line.trim().to_string()).collect();
+        let mut added = 0usize;
+        let mut content = existing.clone();
+        for pattern in patterns {
+            if have.contains(&pattern) || have.contains(&format!("/{pattern}")) {
+                continue;
+            }
+            have.push(pattern.clone());
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(&pattern);
+            content.push('\n');
+            added += 1;
+        }
+        if added == 0 {
+            return Ok(".gitignore already covers the selection.".to_string());
+        }
+        std::fs::write(&gitignore, content)
+            .map_err(|error| format!("Could not write `.gitignore`: {error}"))?;
+        Ok(format!("Added {added} line(s) to .gitignore"))
+    }
+
+    /// The full commit message (`%B`) of one commit, used to prefill
+    /// "Edit commit message".
+    pub fn commit_full_message(&mut self, rev: &str) -> Result<String, String> {
+        let rev = self.safe_revision("show", rev)?;
+        self.text_owned(&[
+            "show".to_string(),
+            "-s".to_string(),
+            "--no-color".to_string(),
+            "--format=%B".to_string(),
+            rev,
+        ])
+    }
+
+    /// The default message of "squash into parent": the parent's message
+    /// followed by the commit's own. Also validates that the commit can be
+    /// squashed at all (single parent, i.e. not a root or merge commit).
+    pub fn squash_preview(&mut self, rev: &str) -> Result<String, String> {
+        let sha = self.resolve_commit(rev)?;
+        let (_, parents, _, message) = self.commit_raw(&sha)?;
+        if parents.is_empty() {
+            return Err(format!(
+                "{} is a root commit — there is no parent to squash into.",
+                short_sha(&sha)
+            ));
+        }
+        if parents.len() > 1 {
+            return Err(format!(
+                "{} is a merge commit — squashing into a parent is ambiguous.",
+                short_sha(&sha)
+            ));
+        }
+        let (_, _, _, parent_message) = self.commit_raw(&parents[0])?;
+        Ok(combined_message(&parent_message, &message))
+    }
+
+    /// Rewrite the current branch so `rev` carries `message`, keeping its
+    /// tree, parents and author; all descendant commits are replayed on top.
+    pub fn reword_commit(&mut self, rev: &str, message: &str) -> Result<String, String> {
+        let message = normalize_message(message)?;
+        let rev = self.safe_revision("reword", rev)?;
+        let sha = self.resolve_commit(&rev)?;
+        let short = short_sha(&sha);
+        self.rewrite_history(&sha, HistoryEdit::Reword { message })?;
+        Ok(format!("Reworded commit {short}"))
+    }
+
+    /// Fold `rev` into its parent: the parent is rebuilt with `rev`'s tree and
+    /// a combined message, then all descendant commits are replayed on top.
+    /// Without `message` the combined default is used.
+    pub fn squash_commit_into_parent(
+        &mut self,
+        rev: &str,
+        message: Option<&str>,
+    ) -> Result<String, String> {
+        let rev = self.safe_revision("squash", rev)?;
+        let sha = self.resolve_commit(&rev)?;
+        let short = short_sha(&sha);
+        let default = self.squash_preview(&rev)?;
+        let message = match message.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => value.to_string(),
+            None => default,
+        };
+        let message = normalize_message(&message)?;
+        self.rewrite_history(&sha, HistoryEdit::SquashIntoParent { message })?;
+        Ok(format!("Squashed commit {short} into its parent"))
+    }
+
+    /// Resolves one revision to a full commit hash, rejecting anything that
+    /// is not a commit.
+    fn resolve_commit(&mut self, rev: &str) -> Result<String, String> {
+        let rev = self.safe_revision("resolve", rev)?;
+        let output = self.text(&["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")])?;
+        let sha = output.trim().to_string();
+        if sha.is_empty() {
+            return Err(format!("`{rev}` is not a commit."));
+        }
+        Ok(sha)
+    }
+
+    /// Raw fields of one commit: `(tree, parents, author line, message)`.
+    /// The author line is the raw object form `Name <email> unix-tz`, so it
+    /// can be written back into a rebuilt commit object verbatim.
+    fn commit_raw(&mut self, sha: &str) -> Result<(String, Vec<String>, String, String), String> {
+        let output = self.text(&[
+            "show",
+            "-s",
+            "--no-color",
+            "--date=raw",
+            "--format=%T%x1f%P%x1f%an <%ae> %ad%x1f%B",
+            sha,
+        ])?;
+        let mut parts = output.splitn(4, '\u{1f}');
+        let tree = parts.next().unwrap_or_default().trim().to_string();
+        let parents = parts
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(|value| value.to_string())
+            .collect();
+        let author = parts.next().unwrap_or_default().trim().to_string();
+        let message = parts.next().unwrap_or_default().to_string();
+        if tree.is_empty() || author.is_empty() {
+            return Err(format!("Could not read the commit object of {sha}."));
+        }
+        Ok((tree, parents, author, message))
+    }
+
+    /// Writes a raw commit object into the object database and returns its
+    /// id (`git hash-object -t commit -w --stdin`). Plumbing keeps the
+    /// rewrite free of index/worktree requirements: the working tree never
+    /// moves, so this also works with a dirty tree.
+    fn write_commit_object(
+        &mut self,
+        tree: &str,
+        parents: &[String],
+        author_line: &str,
+        committer_line: &str,
+        message: &str,
+    ) -> Result<String, String> {
+        let mut object = String::new();
+        object.push_str("tree ");
+        object.push_str(tree);
+        object.push('\n');
+        for parent in parents {
+            object.push_str("parent ");
+            object.push_str(parent);
+            object.push('\n');
+        }
+        object.push_str("author ");
+        object.push_str(author_line);
+        object.push('\n');
+        object.push_str("committer ");
+        object.push_str(committer_line);
+        object.push('\n');
+        object.push('\n');
+        object.push_str(message.trim_end());
+        object.push('\n');
+        let args: Vec<String> = ["hash-object", "-t", "commit", "-w", "--stdin"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let output = self.exec_stdin_owned(&args, object.as_bytes())?;
+        if !output.success() {
+            return Err(git_failure(&args, &output));
+        }
+        let sha = output.stdout_lossy().trim().to_string();
+        if sha.is_empty() {
+            return Err("git hash-object returned no object id.".to_string());
+        }
+        Ok(sha)
+    }
+
+    /// The committer identity for rebuilt commits, as a raw object line.
+    fn committer_ident(&mut self) -> Result<String, String> {
+        let line = self.text(&["var", "GIT_COMMITTER_IDENT"])?.trim().to_string();
+        if line.is_empty() {
+            return Err(
+                "Could not resolve the committer identity — set user.name and user.email."
+                    .to_string(),
+            );
+        }
+        Ok(line)
+    }
+
+    /// The checked-out branch name, `Err` on a detached HEAD.
+    fn current_branch_name(&mut self) -> Result<String, String> {
+        let output = self.exec(&["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        if !output.success() {
+            return Err(
+                "Detached HEAD — check out a branch before rewriting history.".to_string()
+            );
+        }
+        Ok(output.stdout_lossy().trim().to_string())
+    }
+
+    /// Whether `rev` is an ancestor of (or equal to) `of`.
+    fn is_ancestor(&mut self, rev: &str, of: &str) -> Result<bool, String> {
+        let args: Vec<String> = ["merge-base", "--is-ancestor", rev, of]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let output = self.exec_owned(&args)?;
+        match output.status {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(git_failure(&args, &output)),
+        }
+    }
+
+    /// One history rewrite step: replace `sha` per `edit`, then replay every
+    /// descendant (`sha..HEAD`) with remapped parents and finally move the
+    /// branch with a compare-and-swap `update-ref`.
+    fn rewrite_history(&mut self, sha: &str, edit: HistoryEdit) -> Result<(), String> {
+        if !self.has_head()? {
+            return Err("The repository has no commits to rewrite.".to_string());
+        }
+        let branch = self.current_branch_name()?;
+        if !self.is_ancestor(sha, "HEAD")? {
+            return Err(format!(
+                "{} is not on the current branch — only commits reachable from HEAD can be rewritten.",
+                short_sha(sha)
+            ));
+        }
+        let old_head = self
+            .text(&["rev-parse", "--verify", "HEAD"])?
+            .trim()
+            .to_string();
+        let committer = self.committer_ident()?;
+
+        // Rebuild the target commit itself.
+        let (tree, parents, author_line, _) = self.commit_raw(sha)?;
+        let (new_parents, new_author, new_message) = match &edit {
+            HistoryEdit::Reword { message } => (parents.clone(), author_line, message.clone()),
+            HistoryEdit::SquashIntoParent { message } => {
+                let parent = parents
+                    .first()
+                    .ok_or_else(|| format!("{} is a root commit.", short_sha(sha)))?;
+                let (_, parent_parents, parent_author, _) = self.commit_raw(parent)?;
+                (parent_parents, parent_author, message.clone())
+            }
+        };
+        let new_sha = self.write_commit_object(
+            &tree,
+            &new_parents,
+            &new_author,
+            &committer,
+            &new_message,
+        )?;
+        let mut map = std::collections::HashMap::new();
+        map.insert(sha.to_string(), new_sha.clone());
+
+        // Replay descendants in topological order, parents before children.
+        let range = format!("{sha}..{old_head}");
+        let descendants = self.text(&["rev-list", "--topo-order", "--reverse", range.as_str()])?;
+        let mut tip = new_sha;
+        for line in descendants.lines() {
+            let child = line.trim();
+            if child.is_empty() {
+                continue;
+            }
+            let (child_tree, child_parents, child_author, child_message) =
+                self.commit_raw(child)?;
+            let mapped: Vec<String> = child_parents
+                .iter()
+                .map(|parent| map.get(parent).cloned().unwrap_or_else(|| parent.clone()))
+                .collect();
+            let new_child = self.write_commit_object(
+                &child_tree,
+                &mapped,
+                &child_author,
+                &committer,
+                &child_message,
+            )?;
+            map.insert(child.to_string(), new_child.clone());
+            tip = new_child;
+        }
+
+        // Safety net: the final tree must be identical, otherwise something
+        // went deeply wrong and the branch is left untouched.
+        let old_tree = self
+            .text(&["rev-parse", "--verify", &format!("{old_head}^{{tree}}")])?
+            .trim()
+            .to_string();
+        let new_tree = self
+            .text(&["rev-parse", "--verify", &format!("{tip}^{{tree}}")])?
+            .trim()
+            .to_string();
+        if old_tree != new_tree {
+            return Err(
+                "Internal error: the rewritten history changed the final tree; \
+                 the branch was left untouched."
+                    .to_string(),
+            );
+        }
+        self.text(&[
+            "update-ref",
+            &format!("refs/heads/{branch}"),
+            tip.as_str(),
+            old_head.as_str(),
+        ])?;
+        Ok(())
+    }
+
     /// Revert one non-merge commit as a new commit.
     pub fn revert_commit(&mut self, rev: &str) -> Result<String, String> {
         let rev = self.safe_revision("revert", rev)?;
@@ -1220,6 +1587,167 @@ fn plural(count: usize) -> &'static str {
     } else {
         "s"
     }
+}
+
+/// What to do with the target commit of a history rewrite.
+#[derive(Debug, Clone)]
+enum HistoryEdit {
+    /// Keep tree, parents and author; replace the message.
+    Reword { message: String },
+    /// Rebuild the commit as its parent with the target's tree and a
+    /// combined message, effectively folding the target into the parent.
+    SquashIntoParent { message: String },
+}
+
+/// Parse `git remote --verbose` output into one entry per remote.
+///
+/// Each line is `name<TAB>url (fetch|push)`; the first fetch line and the
+/// first push line per name win.
+fn parse_remotes(output: &str) -> Vec<RemoteEntry> {
+    let mut remotes: Vec<RemoteEntry> = Vec::new();
+    for line in output.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, rest)) = line.split_once('\t') else {
+            continue;
+        };
+        let (url, kind) = match rest.strip_suffix(" (fetch)") {
+            Some(url) => (url, 0),
+            None => match rest.strip_suffix(" (push)") {
+                Some(url) => (url, 1),
+                None => (rest, 2),
+            },
+        };
+        let entry = match remotes.iter_mut().find(|entry| entry.name == name) {
+            Some(entry) => entry,
+            None => {
+                remotes.push(RemoteEntry {
+                    name: name.to_string(),
+                    fetch_url: String::new(),
+                    push_url: String::new(),
+                });
+                remotes.last_mut().unwrap()
+            }
+        };
+        if kind == 0 && entry.fetch_url.is_empty() {
+            entry.fetch_url = url.to_string();
+        } else if kind == 1 && entry.push_url.is_empty() {
+            entry.push_url = url.to_string();
+        } else if kind == 2 && entry.fetch_url.is_empty() {
+            entry.fetch_url = url.to_string();
+        }
+    }
+    remotes
+        .iter_mut()
+        .for_each(|entry| {
+            if entry.push_url.is_empty() {
+                entry.push_url = entry.fetch_url.clone();
+            }
+        });
+    remotes
+}
+
+/// Basic remote name/URL validation before the arguments reach git.
+fn validate_remote(name: &str, url: &str) -> Result<(String, String), String> {
+    let name = name.trim();
+    let url = url.trim();
+    if name.is_empty() {
+        return Err("A remote name is required.".to_string());
+    }
+    if name.contains(char::is_whitespace) || name.starts_with('-') || name == "." || name == ".." {
+        return Err(format!("Invalid remote name `{name}`."));
+    }
+    if url.is_empty() {
+        return Err("A remote URL is required.".to_string());
+    }
+    if url.starts_with('-') {
+        return Err(format!("Invalid remote URL `{url}`."));
+    }
+    Ok((name.to_string(), url.to_string()))
+}
+
+/// Escape the characters gitignore treats specially at the start of a line.
+fn escape_gitignore_pattern(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix('!') {
+        format!("\\!{rest}")
+    } else if let Some(rest) = path.strip_prefix('#') {
+        format!("\\#{rest}")
+    } else {
+        path.to_string()
+    }
+}
+
+/// Default "squash into parent" message: the parent's message followed by the
+/// folded commit's own, like `git rebase` squash does.
+fn combined_message(parent_message: &str, commit_message: &str) -> String {
+    format!("{}\n\n{}", parent_message.trim(), commit_message.trim())
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+/// Validate a rewritten commit message: non-empty and free of NUL bytes
+/// (commit objects cannot contain them).
+fn normalize_message(message: &str) -> Result<String, String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("A commit message is required.".to_string());
+    }
+    if message.contains('\0') {
+        return Err("A commit message cannot contain NUL bytes.".to_string());
+    }
+    Ok(message.to_string())
+}
+
+/// Clone `url` into `parent_dir/name`. Runs outside any repository, so it is
+/// a free function taking an executor instead of a client method.
+pub fn clone_repository<E: GitExecutor>(
+    executor: &mut E,
+    parent_dir: &str,
+    url: &str,
+    name: &str,
+) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("A repository URL is required.".to_string());
+    }
+    if url.starts_with('-') {
+        return Err(format!("Invalid repository URL `{url}`."));
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("A destination folder name is required.".to_string());
+    }
+    let relative = std::path::Path::new(name);
+    if relative.is_absolute() || name.starts_with('-') {
+        return Err(format!("Invalid destination folder name `{name}`."));
+    }
+    for component in relative.components() {
+        match component {
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::ParentDir => {
+                return Err(format!("Invalid destination folder name `{name}`."));
+            }
+            _ => {}
+        }
+    }
+    let args: Vec<String> = ["clone", url, name]
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+    let output = executor.exec(parent_dir, &args)?;
+    if !output.success() {
+        return Err(git_failure(&args, &output));
+    }
+    let cloned = std::path::Path::new(parent_dir).join(name);
+    Ok(format!(
+        "Cloned {url} into {}",
+        cloned.to_string_lossy()
+    ))
 }
 
 /// Parse the combined `--format=<fields>` and `--raw -z` output of

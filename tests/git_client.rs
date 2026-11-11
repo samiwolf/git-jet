@@ -6,8 +6,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use git_jet::core::{
-    CmdOutput, DiffMode, GitClient, GitExecutor, GitRequest, LogFilter, Rendered, RollbackLevel,
-    StashAction,
+    clone_repository, CmdOutput, DiffMode, GitClient, GitExecutor, GitRequest, LogFilter, Rendered,
+    RollbackLevel, StashAction,
 };
 use tempfile::TempDir;
 
@@ -1067,5 +1067,295 @@ fn delete_remote_branch_removes_it_on_the_remote() {
     client.delete_remote_branch("origin/temp").unwrap();
     let remotes = git(&worktree, &["branch", "-r", "--format=%(refname:short)"]);
     assert!(!remotes.contains("origin/temp"), "{remotes}");
+}
+
+#[test]
+fn remotes_can_be_added_edited_removed_and_fetched() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    let holder = tempfile::tempdir().unwrap();
+    let remote_url = holder.path().join("origin.git").to_string_lossy().into_owned();
+    assert!(
+        Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg("--bare")
+            .arg("--initial-branch=main")
+            .arg(&remote_url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "creating the bare remote failed"
+    );
+
+    assert!(client.list_remotes().unwrap().is_empty());
+
+    client.add_remote("origin", &remote_url).unwrap();
+    let remotes = client.list_remotes().unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "origin");
+    assert_eq!(remotes[0].fetch_url, remote_url);
+    assert_eq!(remotes[0].push_url, remote_url);
+
+    // Validation: invalid names/URLs and duplicates never reach git.
+    assert!(client.add_remote("-bad", &remote_url).is_err());
+    assert!(client.add_remote("ok", "").is_err());
+    assert!(client.add_remote("origin", &remote_url).is_err());
+
+    let mirror = holder.path().join("mirror.git").to_string_lossy().into_owned();
+    assert!(
+        Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg("--bare")
+            .arg("--initial-branch=main")
+            .arg(&mirror)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "creating the bare mirror failed"
+    );
+
+    client.fetch_remote("origin").unwrap();
+    client.set_remote_url("origin", &mirror).unwrap();
+    let remotes = client.list_remotes().unwrap();
+    assert_eq!(remotes[0].fetch_url, mirror);
+    client.fetch_remote("origin").unwrap();
+
+    client.remove_remote("origin").unwrap();
+    assert!(client.list_remotes().unwrap().is_empty());
+    assert!(client.remove_remote("origin").is_err());
+}
+
+#[test]
+fn incoming_lists_commits_from_upstream() {
+    let (bare, client_dir) = clone_of_bare_remote();
+    let worktree = client_dir.path().join("worktree");
+    test_git_config(&worktree);
+    let remote_url = bare.path().join("origin.git").to_string_lossy().into_owned();
+    let mut client = GitClient::new(StdExecutor, worktree.to_str().unwrap().to_string());
+
+    // Nothing fetched yet: no upstream, so no incoming list.
+    let (commits, has_upstream) = client.incoming_commits(50).unwrap();
+    assert!(!has_upstream);
+    assert!(commits.is_empty());
+
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    client
+        .push_with_options(Some("origin"), Some("main"), false, true)
+        .unwrap();
+
+    // Up to date with the upstream.
+    let (commits, has_upstream) = client.incoming_commits(50).unwrap();
+    assert!(has_upstream);
+    assert!(commits.is_empty());
+
+    // Advance the remote from a second clone, fetch, then list incoming.
+    let clone2 = tempfile::tempdir().unwrap();
+    git(
+        clone2.path(),
+        &[
+            "clone",
+            "-q",
+            "-c",
+            "user.name=Git Jet Tests",
+            "-c",
+            "user.email=git-jet@example.test",
+            remote_url.as_str(),
+            clone2.path().join("worktree").to_str().unwrap(),
+        ],
+    );
+    let second = clone2.path().join("worktree");
+    write(&second, "b.txt", "remote side\n");
+    git(&second, &["add", "--all"]);
+    git(&second, &["commit", "-q", "-m", "on the remote"]);
+    git(&second, &["push", "-q", "origin", "main"]);
+
+    client.fetch(true).unwrap();
+    let (commits, has_upstream) = client.incoming_commits(50).unwrap();
+    assert!(has_upstream);
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].subject, "on the remote");
+}
+
+#[test]
+fn gitignore_adds_and_dedupes_patterns() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    write(dir.path(), "notes.md", "scratch\n");
+    write(dir.path(), "tmp/keep.txt", "nested\n");
+    write(dir.path(), "!weird.md", "bang\n");
+
+    client.add_to_gitignore(&["notes.md".to_string()]).unwrap();
+    let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(content, "notes.md\n");
+
+    let report = client.status().unwrap();
+    assert!(!report
+        .untracked()
+        .iter()
+        .any(|entry| entry.path == "notes.md"));
+
+    // Idempotent: the same pattern is not written twice.
+    let again = client.add_to_gitignore(&["notes.md".to_string()]).unwrap();
+    assert!(again.contains("already covers"), "{again}");
+    let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(content.matches("notes.md").count(), 1);
+
+    client.add_to_gitignore(&["tmp".to_string()]).unwrap();
+    // `git check-ignore` exits 0 exactly when a path is ignored.
+    git(dir.path(), &["check-ignore", "-q", "notes.md"]);
+    git(dir.path(), &["check-ignore", "-q", "tmp/keep.txt"]);
+
+    // A leading `!` is escaped so it cannot become a negation.
+    client.add_to_gitignore(&["!weird.md".to_string()]).unwrap();
+    let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(content.contains("\\!weird.md"), "{content}");
+
+    assert!(client.add_to_gitignore(&[]).is_err());
+    assert!(client.add_to_gitignore(&["-x".to_string()]).is_err());
+}
+
+#[test]
+fn squash_folds_a_commit_into_its_parent() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    commit_change(&dir, "a.txt", "one\n", "second commit\n\nsecond body");
+    // Give the folded commit a distinct author to verify it is replaced
+    // by the parent's author.
+    write(dir.path(), "a.txt", "two\n");
+    git(dir.path(), &["add", "--all"]);
+    git(
+        dir.path(),
+        &["-c", "user.name=Third", "-c", "user.email=third@test", "commit", "-q", "-m", "third commit"],
+    );
+    let c = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+
+    let tip_tree = git(dir.path(), &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let count_before = git(dir.path(), &["rev-list", "--count", "HEAD"]).trim().to_string();
+    assert_eq!(count_before, "3");
+
+    // Preview shows the combined default message and validates the commit.
+    let preview = client.squash_preview(&c).unwrap();
+    assert!(preview.contains("second body"), "{preview}");
+    assert!(preview.contains("third commit"), "{preview}");
+
+    client.squash_commit_into_parent(&c, None).unwrap();
+
+    let count_after = git(dir.path(), &["rev-list", "--count", "HEAD"]).trim().to_string();
+    assert_eq!(count_after, "2");
+    let subjects = git(dir.path(), &["log", "--format=%s"]);
+    assert!(subjects.starts_with("second commit"), "{subjects}");
+    assert!(subjects.contains("initial commit"), "{subjects}");
+    let message = git(dir.path(), &["show", "-s", "--format=%B", "HEAD"]);
+    assert!(message.contains("second body"), "{message}");
+    assert!(message.contains("third commit"), "{message}");
+    let author = git(dir.path(), &["show", "-s", "--format=%an", "HEAD"]).trim().to_string();
+    assert_eq!(author, "Git Jet Tests", "the squashed commit keeps the parent's author");
+    let tree = git(dir.path(), &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    assert_eq!(tree, tip_tree, "the final tree must not change");
+
+    // Explicit message override.
+    client.squash_commit_into_parent("HEAD", Some("manual message")).unwrap();
+    let subjects = git(dir.path(), &["log", "--format=%s"]);
+    assert!(subjects.starts_with("manual message"), "{subjects}");
+}
+
+#[test]
+fn squash_replays_descendants_and_rejects_impossible_targets() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    commit_change(&dir, "a.txt", "one\n", "second commit");
+    let c = commit_change(&dir, "a.txt", "two\n", "third commit");
+    let d = commit_change(&dir, "a.txt", "three\n", "fourth commit");
+    let d_tree = git(dir.path(), &["show", "-s", "--format=%T", &d]).trim().to_string();
+
+    // Squashing a commit below the tip replays the descendants.
+    client.squash_commit_into_parent(&c, Some("folded")).unwrap();
+    let count = git(dir.path(), &["rev-list", "--count", "HEAD"]).trim().to_string();
+    assert_eq!(count, "3");
+    let subjects = git(dir.path(), &["log", "--format=%s"]);
+    assert!(subjects.contains("fourth commit"), "{subjects}");
+    assert!(subjects.contains("folded"), "{subjects}");
+    let tree = git(dir.path(), &["show", "-s", "--format=%T", "HEAD"]).trim().to_string();
+    assert_eq!(tree, d_tree, "the replayed tip keeps its tree");
+
+    // A commit from another branch is not reachable from HEAD: `feature`
+    // branches away before main advances, so "fifth" is main-only.
+    git(dir.path(), &["switch", "-q", "-c", "feature"]);
+    commit_change(&dir, "feature.txt", "feature\n", "feature work");
+    git(dir.path(), &["switch", "-q", "main"]);
+    let fifth = commit_change(&dir, "a.txt", "five\n", "fifth commit");
+    git(dir.path(), &["switch", "-q", "feature"]);
+    let error = client.squash_commit_into_parent(&fifth, None).unwrap_err();
+    assert!(error.contains("not on the current branch"), "{error}");
+
+    // A merge commit cannot be squashed into a parent.
+    git(dir.path(), &["switch", "-q", "main"]);
+    client.merge_branch("feature", true).unwrap();
+    let merge_sha = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+    let error = client.squash_commit_into_parent(&merge_sha, None).unwrap_err();
+    assert!(error.contains("merge"), "{error}");
+
+    // Detached HEAD cannot rewrite history.
+    git(dir.path(), &["switch", "-q", "--detach", "main"]);
+    let error = client.reword_commit("HEAD", "message").unwrap_err();
+    assert!(error.contains("Detached HEAD"), "{error}");
+}
+
+#[test]
+fn reword_changes_only_the_message() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    let b = commit_change(&dir, "a.txt", "one\n", "second commit");
+    commit_change(&dir, "a.txt", "two\n", "third commit");
+
+    let full = client.commit_full_message(&b).unwrap();
+    assert!(full.contains("second commit"), "{full}");
+
+    let tip_tree = git(dir.path(), &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    client.reword_commit(&b, "rewritten second\n\nnew body").unwrap();
+
+    let count = git(dir.path(), &["rev-list", "--count", "HEAD"]).trim().to_string();
+    assert_eq!(count, "3");
+    let subjects = git(dir.path(), &["log", "--format=%s"]);
+    assert!(subjects.contains("rewritten second"), "{subjects}");
+    assert!(subjects.contains("third commit"), "{subjects}");
+    assert!(subjects.contains("initial commit"), "{subjects}");
+    let author = git(dir.path(), &["show", "-s", "--format=%an", "HEAD"]).trim().to_string();
+    assert_eq!(author, "Git Jet Tests");
+    let tree = git(dir.path(), &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    assert_eq!(tree, tip_tree, "a reword must not change any tree");
+
+    assert!(client.reword_commit(&b, "   ").is_err());
+    assert!(client.reword_commit("-x", "message").is_err());
+}
+
+#[test]
+fn clone_repository_clones_into_the_destination() {
+    let (bare, client_dir) = clone_of_bare_remote();
+    let worktree = client_dir.path().join("worktree");
+    test_git_config(&worktree);
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    git(&worktree, &["push", "-q", "origin", "main"]);
+    let remote_url = bare.path().join("origin.git").to_string_lossy().into_owned();
+
+    let dest = tempfile::tempdir().unwrap();
+    let mut executor = StdExecutor;
+    let output =
+        clone_repository(&mut executor, dest.path().to_str().unwrap(), &remote_url, "cloned").unwrap();
+    assert!(output.contains("Cloned"), "{output}");
+
+    let cloned = dest.path().join("cloned");
+    let log = git(&cloned, &["log", "--oneline"]);
+    assert!(log.contains("initial"), "{log}");
+
+    assert!(clone_repository(&mut executor, dest.path().to_str().unwrap(), "", "x").is_err());
+    assert!(clone_repository(&mut executor, dest.path().to_str().unwrap(), &remote_url, "..").is_err());
+    assert!(clone_repository(&mut executor, dest.path().to_str().unwrap(), &remote_url, "-x").is_err());
 }
 

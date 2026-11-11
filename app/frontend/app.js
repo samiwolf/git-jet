@@ -279,6 +279,71 @@ async function browseForRepository() {
   }
 }
 
+/* -------------------------------------------------------------- clone flow */
+
+let cloneParent = null;
+
+function suggestRepoName(url) {
+  const last = url.trim().replace(/[\\/]+$/, "").split(/[\\/:]/).pop() || "";
+  return last.replace(/\.git$/i, "");
+}
+
+function updateCloneDest() {
+  const name = $("clone-name").value.trim() || suggestRepoName($("clone-url").value);
+  $("clone-dest").textContent = cloneParent
+    ? `Destination: ${cloneParent.replace(/[\\/]+$/, "")}${name ? "/" + name : ""}`
+    : "Pick a destination folder first.";
+}
+
+function openCloneDialog() {
+  cloneParent = null;
+  $("clone-url").value = "";
+  $("clone-name").value = "";
+  $("clone-error").textContent = "";
+  updateCloneDest();
+  show($("clone-dialog"));
+  $("clone-url").focus();
+}
+
+async function browseCloneDestination() {
+  const picked = await pickFolder();
+  if (picked) {
+    cloneParent = picked;
+    updateCloneDest();
+  }
+}
+
+async function submitCloneDialog() {
+  const url = $("clone-url").value.trim();
+  const name = $("clone-name").value.trim() || suggestRepoName(url);
+  $("clone-error").textContent = "";
+  if (!url) {
+    $("clone-error").textContent = "Enter a repository URL first.";
+    return;
+  }
+  if (!name) {
+    $("clone-error").textContent = "The URL does not suggest a folder name — type one.";
+    return;
+  }
+  if (!cloneParent) {
+    $("clone-error").textContent = "Pick a destination folder first.";
+    return;
+  }
+  $("clone-ok").disabled = true;
+  try {
+    setStatus(`Cloning ${url}…`);
+    const info = await invoke("clone_repository", { url, parent: cloneParent, name });
+    hide($("clone-dialog"));
+    setStatus(String(info.root || "Clone complete"));
+    await openRepository(info.root);
+  } catch (error) {
+    $("clone-error").textContent = errorText(error);
+    setStatus(`Clone failed: ${errorText(error)}`, true);
+  } finally {
+    $("clone-ok").disabled = false;
+  }
+}
+
 /* ----------------------------------------------------------------- status */
 
 async function refreshStatus() {
@@ -296,7 +361,8 @@ function renderBranchBar(status) {
   if (branch.upstream) parts.push(el("span", "muted", `↔ ${branch.upstream}`));
   if (branch.behind > 0) {
     const pill = el("span", "count-pill pull", `↓ ${branch.behind}`);
-    pill.title = `Behind upstream — ${branch.behind} commit(s) to pull`;
+    pill.title = `Behind upstream — ${branch.behind} incoming commit(s). Click to view.`;
+    pill.addEventListener("click", () => void openIncomingDialog());
     parts.push(pill);
   }
   if (branch.ahead > 0) {
@@ -495,6 +561,8 @@ function showFileContextMenu(event, entry, section, row) {
   } else if (section === "untracked") {
     items.push({ label: "Stage", hint: "→", run: () =>
       runAction("Stage file", () => invoke("stage", { paths: [entry.path] })) });
+    items.push({ label: "Add to .gitignore", run: () =>
+      runAction(`Ignore ${entry.displayPath}`, () => invoke("add_to_gitignore", { paths: [entry.path] })) });
   } else {
     items.push({ label: "Stage", hint: "→", run: () =>
       runAction("Stage file", () => invoke("stage", { paths: [entry.path] })) });
@@ -520,6 +588,11 @@ function showSectionContextMenu(event, title, section, files) {
     if (section === "staged") {
       items.push({ label: `Unstage all (${files.length})`, run: () =>
         runAction("Unstage all", () => invoke("unstage", { paths: files.map((f) => f.path) })) });
+    } else if (section === "untracked") {
+      items.push({ label: `Stage all (${files.length})`, run: () =>
+        runAction("Stage all", () => invoke("stage", { paths: files.map((f) => f.path) })) });
+      items.push({ label: `Add all to .gitignore (${files.length})`, run: () =>
+        runAction("Add to .gitignore", () => invoke("add_to_gitignore", { paths: files.map((f) => f.path) })) });
     } else if (section !== "conflict") {
       items.push({ label: `Stage all (${files.length})`, run: () =>
         runAction("Stage all", () => invoke("stage", { paths: files.map((f) => f.path) })) });
@@ -563,6 +636,8 @@ function repoMenuItems() {
       runAction("Stash push", () => invoke("stash_push", { message: $("stash-message").value.trim() })) },
     { sep: true },
     { label: "Fetch ⮁ All", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
+    { label: "Incoming commits…", hint: `↓ ${behind}`, run: openIncomingDialog },
+    { label: "Manage remotes…", run: openRemotesDialog },
     { label: "Reset changes (hard)", danger: true, run: () =>
       { if (confirm("Hard reset of the current branch to HEAD?\n\nAll uncommitted staged and worktree changes will be deleted!")) {
         void runAction("Hard reset", () => invoke("reset_branch", { sha: "HEAD", mode: "hard" }));
@@ -1104,6 +1179,10 @@ function renderLog(commits) {
         ...(isHead && !isMerge
           ? [{ label: "Undo commit (changes back to working tree)", run: () => confirmUndoCommit(commit) }]
           : []),
+        { label: "Edit commit message…", run: () => rewordCommitFlow(commit) },
+        ...(isMerge
+          ? []
+          : [{ label: "Squash into parent…", run: () => squashCommitFlow(commit) }]),
         { sep: true },
         ...(isMerge
           ? []
@@ -1308,7 +1387,10 @@ function closeDialogs() {
     closeMergeEditor();
     return;
   }
-  for (const id of ["pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog"]) {
+  for (const id of [
+    "pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog",
+    "incoming-dialog", "remotes-dialog", "message-dialog", "clone-dialog",
+  ]) {
     hide($(id));
   }
 }
@@ -1334,6 +1416,69 @@ async function confirmDropCommit(commit) {
       "This rewrites this commit out of the current branch history (git rebase --onto)." +
       "\nRequires a clean working tree; dropped commits stay reachable via reflog.")) return;
   await runHistoryAction("Drop commit", () => invoke("drop_commit", { sha: commit.hash }));
+}
+
+/* Multi-line variant of the prompt dialog, used for rewriting commit
+   messages (squash and edit-message). Ctrl+Enter submits. */
+let messageHandler = null;
+function messageDialog(title, initial, onSubmit) {
+  const dialog = $("message-dialog");
+  $("message-title").textContent = title;
+  const input = $("message-input");
+  input.value = initial || "";
+  $("message-error").textContent = "";
+  messageHandler = async () => {
+    const value = input.value;
+    if (!value.trim()) {
+      $("message-error").textContent = "Enter a message first.";
+      return;
+    }
+    try {
+      await onSubmit(value);
+      if (!$("message-error").textContent) hide(dialog);
+    } catch (error) {
+      $("message-error").textContent = errorText(error);
+      setStatus(`${title} failed: ${errorText(error)}`, true);
+    }
+  };
+  show(dialog);
+  input.focus();
+}
+
+/* Reword: keep the commit's tree/parents, replace its message. Works for any
+   commit on the current branch, merge commits included. */
+async function rewordCommitFlow(commit) {
+  try {
+    const current = await invoke("commit_full_message", { sha: commit.hash });
+    messageDialog(`Edit message of ${commit.shortHash}`, String(current || "").trimEnd(), async (message) => {
+      await runHistoryAction(`Reword ${commit.shortHash}`, () =>
+        invoke("reword_commit", { sha: commit.hash, message }));
+    });
+  } catch (error) {
+    setStatus(`Edit message failed: ${errorText(error)}`, true);
+  }
+}
+
+/* Squash: fold the commit into its parent (parent keeps its author, gets the
+   combined message and the commit's tree). The branch history is rewritten,
+   so a later push needs force. */
+async function squashCommitFlow(commit) {
+  let preview;
+  try {
+    preview = await invoke("squash_preview", { sha: commit.hash });
+  } catch (error) {
+    setStatus(`Squash failed: ${errorText(error)}`, true);
+    return;
+  }
+  messageDialog(`Squash ${commit.shortHash} into its parent`, String(preview || "").trimEnd(), async (message) => {
+    if (!confirm(
+      `Squash ${commit.shortHash} (${commit.subject}) into its parent?\n\n` +
+      "The branch history is rewritten; descendant commits are replayed on top.\n" +
+      "A later push to the upstream will need a force push."
+    )) return;
+    await runHistoryAction(`Squash ${commit.shortHash}`, () =>
+      invoke("squash_commit", { sha: commit.hash, message }));
+  });
 }
 
 /* Reset current branch to a commit: soft keeps index+worktree changes, mixed
@@ -1770,6 +1915,130 @@ function openPullDialog() {
   show($("pull-dialog"));
 }
 
+/* --------------------------------------------------------- incoming dialog */
+
+/* Commits the upstream has that the current branch does not: exactly what a
+   pull would bring in (HEAD..@{upstream}). */
+async function openIncomingDialog() {
+  const dialog = $("incoming-dialog");
+  const list = $("incoming-commits");
+  $("incoming-error").textContent = "";
+  $("incoming-count").textContent = "";
+  list.replaceChildren(el("div", "empty-hint", "Loading commits…"));
+  show(dialog);
+  try {
+    const { commits, hasUpstream } = await invoke("incoming");
+    list.replaceChildren();
+    if (!hasUpstream) {
+      list.append(el("div", "empty-hint", "The current branch has no upstream to fetch from."));
+      $("incoming-pull").disabled = true;
+      return;
+    }
+    $("incoming-pull").disabled = false;
+    if (commits.length === 0) {
+      list.append(el("div", "empty-hint", "Everything is up to date ✔"));
+      return;
+    }
+    $("incoming-count").textContent = `(${commits.length})`;
+    for (const commit of commits) {
+      const row = el("div", "file-row");
+      row.append(
+        el("span", "commit-sha", commit.shortHash),
+        el("span", "file-path", commit.subject),
+        el("span", "commit-meta", `${commit.author} · ${commit.date}`)
+      );
+      row.title = commit.hash;
+      list.append(row);
+    }
+  } catch (error) {
+    list.replaceChildren();
+    $("incoming-error").textContent = errorText(error);
+  }
+}
+
+/* ---------------------------------------------------------- remotes dialog */
+
+async function openRemotesDialog() {
+  $("remotes-error").textContent = "";
+  show($("remotes-dialog"));
+  await refreshRemotes();
+}
+
+async function refreshRemotes() {
+  if (!state.root) return;
+  const list = $("remotes-list");
+  list.replaceChildren();
+  let remotes = [];
+  try {
+    remotes = await invoke("list_remotes");
+  } catch (error) {
+    $("remotes-error").textContent = errorText(error);
+    return;
+  }
+  if (remotes.length === 0) {
+    list.append(el("div", "empty-hint", "No remotes configured"));
+    return;
+  }
+  for (const remote of remotes) {
+    const row = el("div", "file-row");
+    row.append(
+      el("span", "file-kind k-remote", "⇅"),
+      el("span", "file-path", remote.name),
+      el("span", "commit-meta remote-url", remote.fetchUrl)
+    );
+    row.title = `${remote.name} → fetch: ${remote.fetchUrl} · push: ${remote.pushUrl}`;
+
+    const edit = el("span", "file-action", "edit");
+    edit.title = "Change the remote URL";
+    edit.addEventListener("click", (event) => {
+      event.stopPropagation();
+      promptDialog(`Edit remote ${remote.name}`, "Remote URL", remote.fetchUrl, "", async (url) => {
+        await invoke("set_remote_url", { name: remote.name, url });
+        setStatus(`Remote ${remote.name} now points to ${url}`);
+        await refreshRemotes();
+      });
+    });
+
+    const fetchOne = el("span", "file-action", "fetch");
+    fetchOne.title = `Fetch ${remote.name}`;
+    fetchOne.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void runAction(`Fetch ${remote.name}`, () => invoke("fetch_remote", { name: remote.name }));
+    });
+
+    const remove = el("span", "file-action", "delete");
+    remove.title = "Remove this remote";
+    remove.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!confirm(`Remove remote ${remote.name}?\n\nIts remote-tracking branches (origin/…) are removed too. The remote itself keeps its data.`)) return;
+      await runAction(`Remove remote ${remote.name}`, () => invoke("remove_remote", { name: remote.name }));
+      await refreshRemotes();
+    });
+
+    row.append(edit, fetchOne, remove);
+    list.append(row);
+  }
+}
+
+async function submitAddRemote() {
+  const name = $("remote-name").value.trim();
+  const url = $("remote-url").value.trim();
+  $("remotes-error").textContent = "";
+  if (!name || !url) {
+    $("remotes-error").textContent = "Both a name and a URL are required.";
+    return;
+  }
+  try {
+    await invoke("add_remote", { name, url });
+    $("remote-name").value = "";
+    $("remote-url").value = "";
+    setStatus(`Remote ${name} added`);
+    await refreshRemotes();
+  } catch (error) {
+    $("remotes-error").textContent = errorText(error);
+  }
+}
+
 async function submitPullDialog() {
   const strategy = document.querySelector('input[name="pull-strategy"]:checked');
   const ffOnly = strategy ? strategy.value === "ff" : false;
@@ -2035,6 +2304,7 @@ function boot() {
   }
 
   $("open-folder-btn").addEventListener("click", browseForRepository);
+  $("clone-open-btn").addEventListener("click", openCloneDialog);
   $("open-path-btn").addEventListener("click", () => {
     const value = $("repo-path").value.trim();
     if (value) openRepository(expandHome(value));
@@ -2060,6 +2330,46 @@ function boot() {
   $("push-ok").addEventListener("click", submitPushDialog);
   $("compare-close").addEventListener("click", () => hide($("compare-dialog")));
   $("prompt-cancel").addEventListener("click", () => hide($("prompt-dialog")));
+
+  /* incoming commits */
+  $("incoming-close").addEventListener("click", () => hide($("incoming-dialog")));
+  $("incoming-pull").addEventListener("click", () => {
+    hide($("incoming-dialog"));
+    openPullDialog();
+  });
+
+  /* remotes */
+  $("remotes-btn").addEventListener("click", () => void openRemotesDialog());
+  $("remotes-close").addEventListener("click", () => hide($("remotes-dialog")));
+  $("remote-add").addEventListener("click", () => void submitAddRemote());
+  for (const id of ["remote-name", "remote-url"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("remote-add").click();
+    });
+  }
+
+  /* commit message editor (squash / reword) */
+  $("message-cancel").addEventListener("click", () => hide($("message-dialog")));
+  $("message-ok").addEventListener("click", () => {
+    const handler = messageHandler;
+    if (handler) handler();
+  });
+  $("message-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      const handler = messageHandler;
+      if (handler) handler();
+    }
+  });
+
+  /* clone */
+  $("clone-cancel").addEventListener("click", () => hide($("clone-dialog")));
+  $("clone-browse").addEventListener("click", () => void browseCloneDestination());
+  $("clone-ok").addEventListener("click", () => void submitCloneDialog());
+  $("clone-url").addEventListener("input", updateCloneDest);
+  $("clone-name").addEventListener("input", updateCloneDest);
+  $("clone-url").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") $("clone-name").focus();
+  });
 
   /* merge editor */
   $("merge-cancel").addEventListener("click", closeMergeEditor);

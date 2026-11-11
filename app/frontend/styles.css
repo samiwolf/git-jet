@@ -137,7 +137,7 @@ html, body {
   font-size: 11px;
   font-weight: 600;
 }
-.count-pill.pull { color: var(--modified); }
+.count-pill.pull { color: var(--modified); cursor: pointer; }
 .count-pill.push { color: var(--added); }
 .count-pill.stash { color: var(--renamed); }
 
@@ -242,6 +242,32 @@ html, body {
   flex: none;
 }
 .file-action:hover { color: var(--text); border-color: var(--border); background: var(--panel-alt); }
+
+/* Remotes dialog rows */
+.remote-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46%;
+}
+.k-remote { color: var(--added); }
+
+/* Multi-line commit message editor (squash / edit message) */
+.message-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 8px;
+  resize: vertical;
+  min-height: 110px;
+}
+.message-input:focus { outline: none; border-color: var(--accent); }
 
 .k-changed { color: var(--modified); }
 .k-added, .k-untracked { color: var(--added); }

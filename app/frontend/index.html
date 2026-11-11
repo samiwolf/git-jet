@@ -17,6 +17,7 @@
           <button id="open-path-btn" class="btn">Open</button>
         </div>
         <button id="open-folder-btn" class="btn primary">Browse Folders…</button>
+        <button id="clone-open-btn" class="btn">Clone Repository…</button>
         <div id="recent-repos" class="recent-repos hidden">
           <div class="recent-head">Recent repositories</div>
           <div id="recent-list" class="recent-list"></div>
@@ -65,6 +66,8 @@
             </div>
           </div>
         </div>
+
+        <button id="remotes-btn" class="btn" title="Manage remotes">Remotes</button>
 
         <div class="spacer"></div>
 
@@ -186,6 +189,70 @@
         <div class="dialog-actions">
           <button id="push-cancel" class="btn">Cancel</button>
           <button id="push-ok" class="btn primary">Push</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Incoming commits dialog -->
+    <div id="incoming-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Incoming commits <span id="incoming-count" class="muted"></span></div>
+        <div id="incoming-commits" class="dialog-commits"></div>
+        <p id="incoming-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="incoming-close" class="btn">Close</button>
+          <button id="incoming-pull" class="btn primary">Pull…</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manage remotes dialog -->
+    <div id="remotes-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Manage remotes</div>
+        <div id="remotes-list" class="dialog-commits"></div>
+        <div class="dropdown-head">Add remote</div>
+        <div class="dialog-row">
+          <input id="remote-name" class="text-input" placeholder="Name, e.g. upstream" />
+          <input id="remote-url" class="text-input" placeholder="URL, e.g. https://host/user/repo.git" />
+          <button id="remote-add" class="btn small">Add</button>
+        </div>
+        <p id="remotes-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="remotes-close" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Multi-line message dialog (squash / edit commit message) -->
+    <div id="message-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title" id="message-title">Message</div>
+        <textarea id="message-input" class="message-input" rows="7" spellcheck="false"></textarea>
+        <p id="message-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="message-cancel" class="btn">Cancel</button>
+          <button id="message-ok" class="btn primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clone repository dialog -->
+    <div id="clone-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Clone repository</div>
+        <div class="dialog-row">
+          <input id="clone-url" class="text-input" placeholder="Repository URL or local path" />
+        </div>
+        <div class="dialog-row">
+          <input id="clone-name" class="text-input" placeholder="Folder name (optional)" />
+          <button id="clone-browse" class="btn">Destination…</button>
+        </div>
+        <p id="clone-dest" class="compare-hint"></p>
+        <p id="clone-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="clone-cancel" class="btn">Cancel</button>
+          <button id="clone-ok" class="btn primary">Clone</button>
         </div>
       </div>
     </div>

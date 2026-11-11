@@ -9,8 +9,9 @@
 use std::sync::Mutex;
 
 use git_jet::core::{
-    Branch, ChangedFile, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient, Head, LogFilter,
-    RollbackLevel, StashEntry, StatusEntry, StatusReport, TagEntry,
+    clone_repository as engine_clone_repository, Branch, ChangedFile, CommitDetail, CommitNode,
+    DiffMode, EntryKind, GitClient, Head, LogFilter, RemoteEntry, RollbackLevel, StashEntry,
+    StatusEntry, StatusReport, TagEntry,
 };
 use git_jet::{Engine, StdExecutor};
 use serde::Serialize;
@@ -188,6 +189,21 @@ struct TagDto {
 struct OutgoingDto {
     commits: Vec<CommitDto>,
     has_upstream: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IncomingDto {
+    commits: Vec<CommitDto>,
+    has_upstream: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteDto {
+    name: String,
+    fetch_url: String,
+    push_url: String,
 }
 
 #[derive(Serialize)]
@@ -609,6 +625,143 @@ async fn outgoing(state: State<'_, AppState>) -> Result<OutgoingDto, String> {
 }
 
 #[tauri::command]
+async fn incoming(state: State<'_, AppState>) -> Result<IncomingDto, String> {
+    with_engine(&state, move |client| {
+        let (commits, has_upstream) = client.incoming_commits(200)?;
+        Ok(IncomingDto {
+            commits: commits.iter().map(map_commit).collect(),
+            has_upstream,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_remotes(state: State<'_, AppState>) -> Result<Vec<RemoteDto>, String> {
+    with_engine(&state, move |client| {
+        let remotes: Vec<RemoteEntry> = client.list_remotes()?;
+        Ok(remotes
+            .into_iter()
+            .map(|remote| RemoteDto {
+                name: remote.name,
+                fetch_url: remote.fetch_url,
+                push_url: remote.push_url,
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn add_remote(
+    name: Option<String>,
+    url: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A remote name is required.".to_string())?;
+    let url = url.ok_or_else(|| "A remote URL is required.".to_string())?;
+    with_engine(&state, move |client| client.add_remote(&name, &url)).await
+}
+
+#[tauri::command]
+async fn set_remote_url(
+    name: Option<String>,
+    url: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A remote name is required.".to_string())?;
+    let url = url.ok_or_else(|| "A remote URL is required.".to_string())?;
+    with_engine(&state, move |client| client.set_remote_url(&name, &url)).await
+}
+
+#[tauri::command]
+async fn remove_remote(name: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A remote name is required.".to_string())?;
+    with_engine(&state, move |client| client.remove_remote(&name)).await
+}
+
+#[tauri::command]
+async fn fetch_remote(name: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A remote name is required.".to_string())?;
+    with_engine(&state, move |client| client.fetch_remote(&name)).await
+}
+
+#[tauri::command]
+async fn add_to_gitignore(
+    paths: Option<Vec<String>>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let paths = paths.unwrap_or_default();
+    if paths.is_empty() {
+        return Err("At least one path is required.".to_string());
+    }
+    with_engine(&state, move |client| client.add_to_gitignore(&paths)).await
+}
+
+#[tauri::command]
+async fn commit_full_message(sha: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    with_engine(&state, move |client| client.commit_full_message(&sha)).await
+}
+
+#[tauri::command]
+async fn squash_preview(sha: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    with_engine(&state, move |client| client.squash_preview(&sha)).await
+}
+
+#[tauri::command]
+async fn squash_commit(
+    sha: Option<String>,
+    message: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    with_engine(&state, move |client| {
+        client.squash_commit_into_parent(&sha, message.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reword_commit(
+    sha: Option<String>,
+    message: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let sha = sha.ok_or_else(|| "A commit hash is required.".to_string())?;
+    let message = message.ok_or_else(|| "A commit message is required.".to_string())?;
+    with_engine(&state, move |client| client.reword_commit(&sha, &message)).await
+}
+
+#[tauri::command]
+async fn clone_repository(
+    url: Option<String>,
+    parent: Option<String>,
+    name: Option<String>,
+) -> Result<RepoInfo, String> {
+    let url = url.ok_or_else(|| "A repository URL is required.".to_string())?;
+    let parent = parent.ok_or_else(|| "A destination folder is required.".to_string())?;
+    if parent.trim().is_empty() {
+        return Err("Empty destination folder.".to_string());
+    }
+    let name = name.unwrap_or_default();
+    let cloned_root = tauri::async_runtime::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
+        let mut executor = StdExecutor;
+        engine_clone_repository(&mut executor, &parent, &url, &name)?;
+        Ok(std::path::Path::new(&parent).join(name.trim()))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let cloned_root = cloned_root.to_string_lossy().into_owned();
+    let name = std::path::Path::new(&cloned_root)
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cloned_root.clone());
+    Ok(RepoInfo { root: cloned_root, name })
+}
+
+#[tauri::command]
 async fn merge_branch(
     branch: Option<String>,
     no_ff: Option<bool>,
@@ -834,6 +987,18 @@ fn main() {
             push,
             push_options,
             outgoing,
+            incoming,
+            list_remotes,
+            add_remote,
+            set_remote_url,
+            remove_remote,
+            fetch_remote,
+            add_to_gitignore,
+            commit_full_message,
+            squash_preview,
+            squash_commit,
+            reword_commit,
+            clone_repository,
             merge_branch,
             merge_abort,
             get_worktree_file,
