@@ -94,6 +94,8 @@ const state = {
   repoName: "",
   logCount: LOG_PAGE,
   logAll: false,
+  logCommits: [],     // accumulated log rows (append-only pagination)
+  lastStamp: null,    // repo_stamp signature at the last status refresh
   selectedFile: null,   // { path, staged, unstaged, untracked }
   selectedCommit: null, // commit hash shown in the diff tab
   commitFile: null,     // single file selected inside a commit detail
@@ -353,6 +355,9 @@ async function refreshStatus() {
   state.selectedFile = matchSelection(status);
   renderBranchBar(status);
   renderChanges(status);
+  // Remember the repository's filesystem signature so the auto-refresh
+  // timer can skip the next full re-read while nothing changed.
+  state.lastStamp = await invoke("repo_stamp").catch(() => null);
 }
 
 function renderBranchBar(status) {
@@ -1105,30 +1110,51 @@ async function refreshLog(reset) {
   const filters = state.logFilters;
   const commits = await invoke("get_log", {
     count: state.logCount,
+    skip: null,
     all: state.logAll,
     text: filters.text || null,
     author: filters.author || null,
     path: filters.path || null,
   });
+  state.logCommits = commits;
   renderLog(commits);
   $("load-more-btn").classList.toggle("hidden", commits.length < state.logCount);
 }
 
+/* Fetch only the next page (`--skip`) and append its rows — the already
+ * rendered commits are neither re-fetched nor re-rendered. */
 async function loadMore() {
-  state.logCount += LOG_PAGE;
-  await refreshLog(false);
+  const filters = state.logFilters;
+  const page = await invoke("get_log", {
+    count: LOG_PAGE,
+    skip: state.logCount,
+    all: state.logAll,
+    text: filters.text || null,
+    author: filters.author || null,
+    path: filters.path || null,
+  });
+  if (page.length === 0) {
+    $("load-more-btn").classList.add("hidden");
+    return;
+  }
+  const from = state.logCommits.length;
+  state.logCommits.push(...page);
+  state.logCount = state.logCommits.length;
+  renderLog(state.logCommits, from);
+  $("load-more-btn").classList.toggle("hidden", page.length < LOG_PAGE);
 }
 
-function renderLog(commits) {
+function renderLog(commits, from = 0) {
   const list = $("log-list");
-  list.replaceChildren();
+  if (from === 0) list.replaceChildren();
   if (commits.length === 0) {
     list.append(el("div", "no-commits", "No commits yet — make your first commit from Local Changes."));
     return;
   }
   const graph = computeGraph(commits);
   const fragment = document.createDocumentFragment();
-  commits.forEach((commit, index) => {
+  for (let index = from; index < commits.length; index++) {
+    const commit = commits[index];
     const row = graph[index];
     const node = el("div", "commit-row");
 
@@ -1204,7 +1230,7 @@ function renderLog(commits) {
     });
 
     fragment.append(node);
-  });
+  }
   list.append(fragment);
 }
 
@@ -1390,6 +1416,7 @@ function closeDialogs() {
   for (const id of [
     "pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog",
     "incoming-dialog", "remotes-dialog", "message-dialog", "clone-dialog",
+    "oplog-dialog",
   ]) {
     hide($(id));
   }
@@ -2216,8 +2243,44 @@ function action2(row, branch) {
   row.append(action);
 }
 
-/* ----------------------------------------------------------------- stashes */
+/* ------------------------------------------------------------- op log */
 
+/* Viewer for the last 1000 git commands Git Jet ran (this session only). */
+async function openOpLog() {
+  try {
+    renderOpLog(await invoke("git_op_log"));
+    show($("oplog-dialog"));
+  } catch (error) {
+    setStatus(`Op log failed: ${errorText(error)}`, true);
+  }
+}
+
+function renderOpLog(lines) {
+  $("oplog-count").textContent = lines.length ? `${lines.length} line(s)` : "";
+  const list = $("oplog-list");
+  list.replaceChildren();
+  if (lines.length === 0) {
+    list.append(el("div", "empty-hint", "No git operations yet — everything Git Jet runs shows up here."));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (let index = lines.length - 1; index >= 0; index--) {
+    fragment.append(el("div", "oplog-line", lines[index]));
+  }
+  list.append(fragment);
+}
+
+async function clearOpLog() {
+  try {
+    await invoke("clear_git_op_log");
+    renderOpLog([]);
+    setStatus("Operation log cleared");
+  } catch (error) {
+    setStatus(`Clear failed: ${errorText(error)}`, true);
+  }
+}
+
+/* ----------------------------------------------------------------- stashes */
 async function refreshStashes() {
   if (!state.root) return;
   const stashes = await invoke("get_stashes");
@@ -2341,6 +2404,9 @@ function boot() {
   /* remotes */
   $("remotes-btn").addEventListener("click", () => void openRemotesDialog());
   $("remotes-close").addEventListener("click", () => hide($("remotes-dialog")));
+  $("oplog-btn").addEventListener("click", () => void openOpLog());
+  $("oplog-close").addEventListener("click", () => hide($("oplog-dialog")));
+  $("oplog-clear").addEventListener("click", () => void clearOpLog());
   $("remote-add").addEventListener("click", () => void submitAddRemote());
   for (const id of ["remote-name", "remote-url"]) {
     $(id).addEventListener("keydown", (event) => {
@@ -2573,12 +2639,16 @@ function boot() {
     if (event.key === "Escape") closeDialogs();
   });
 
-  /* Auto refresh: re-read status while the window is focused so external
-   * changes (another tool, a terminal, a fetch) show up without F5. */
+  /* Auto refresh: while the window is focused, poll a cheap filesystem
+   * signature of the repository (a few stat calls, no git process) and
+   * only run the full status re-read when something actually changed —
+   * external edits (another tool, a terminal, a fetch) show up without F5. */
   setInterval(async () => {
     if (!state.root || !document.hasFocus()) return;
     if (document.querySelector(".dialog:not(.hidden)")) return;
     try {
+      const stamp = await invoke("repo_stamp").catch(() => null);
+      if (stamp && state.lastStamp && stamp === state.lastStamp) return;
       await refreshStatus();
     } catch { /* transient errors stay silent */ }
   }, 15000);

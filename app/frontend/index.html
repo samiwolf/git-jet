@@ -68,6 +68,7 @@
         </div>
 
         <button id="remotes-btn" class="btn" title="Manage remotes">Remotes</button>
+        <button id="oplog-btn" class="btn" title="Git operation log — last 1000 git commands Git Jet ran">Op Log</button>
 
         <div class="spacer"></div>
 
@@ -220,6 +221,19 @@
         <p id="remotes-error" class="dialog-error"></p>
         <div class="dialog-actions">
           <button id="remotes-close" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Git operation log dialog (last 1000 git commands, clearable) -->
+    <div id="oplog-dialog" class="dialog hidden">
+      <div class="dialog-card oplog-card">
+        <div class="dialog-title">Git operation log <span id="oplog-count" class="muted"></span></div>
+        <p class="compare-hint">Newest first — every git command Git Jet ran this session, with its outcome and duration. Kept in memory only (last 1000).</p>
+        <div id="oplog-list" class="oplog-list"></div>
+        <div class="dialog-actions">
+          <button id="oplog-clear" class="btn">Clear log</button>
+          <button id="oplog-close" class="btn primary">Close</button>
         </div>
       </div>
     </div>

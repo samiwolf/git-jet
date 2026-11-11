@@ -66,8 +66,12 @@ Windows, macOS and Linux, built with [Tauri](https://tauri.app).
 - **Stashes** — push (with an optional message), pop, apply and drop.
 - **Toolbar** — fetch (all), pull/push dialogs, refresh (`F5`) and a status
   bar that keeps the last action visible. The status re-reads itself every
-  15 seconds while the window is focused, so external changes show up
-  without a manual refresh.
+  15 seconds while the window is focused — a cheap filesystem signature of
+  the repository (index, `HEAD`, refs) skips the git work when nothing has
+  changed, so external changes still show up without a manual refresh.
+- **Op Log** — a viewer for the last 1000 git commands Git Jet ran this
+  session (arguments, outcome and duration, newest first) with a
+  clear-log button. In-memory only; nothing is written to disk.
 
 ## Requirements
 
@@ -114,7 +118,9 @@ engine's direct process API with arguments passed verbatim, so paths and
 commit messages with spaces or quotes are safe. History comes from
 `git status --porcelain=v2`, `git log --pretty=format:...` with `%P`/`%d`,
 `git branch --format=...` and `git stash list --format=...`, parsed in
-`src/core`.
+`src/core`. Git runs with `core.fsmonitor` (its filesystem-watch daemon) and
+the untracked cache enabled per invocation, which keeps `status` fast on
+large repositories without touching the repository's own configuration.
 
 ## Permissions and safety
 

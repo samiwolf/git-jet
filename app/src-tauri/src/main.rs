@@ -8,6 +8,7 @@
 
 use std::sync::Mutex;
 
+use git_jet::core::oplog;
 use git_jet::core::{
     clone_repository as engine_clone_repository, Branch, ChangedFile, CommitDetail, CommitNode,
     DiffMode, EntryKind, GitClient, Head, LogFilter, RemoteEntry, RollbackLevel, StashEntry,
@@ -342,6 +343,7 @@ async fn get_status(state: State<'_, AppState>) -> Result<StatusDto, String> {
 #[tauri::command]
 async fn get_log(
     count: Option<u32>,
+    skip: Option<u32>,
     all: Option<bool>,
     text: Option<String>,
     author: Option<String>,
@@ -349,6 +351,7 @@ async fn get_log(
     state: State<'_, AppState>,
 ) -> Result<Vec<CommitNodeDto>, String> {
     let count = count.unwrap_or(100).max(1).min(500) as usize;
+    let skip = skip.unwrap_or(0) as usize;
     let all = all.unwrap_or(false);
     let text = text.map(|value| value.trim().to_string()).filter(|v| !v.is_empty());
     let author = author.map(|value| value.trim().to_string()).filter(|v| !v.is_empty());
@@ -360,7 +363,7 @@ async fn get_log(
         branch: None,
     };
     with_engine(&state, move |client| {
-        let nodes = client.log_nodes(count, all, &filter)?;
+        let nodes = client.log_nodes(count, skip, all, &filter)?;
         Ok(nodes
             .into_iter()
             .map(|node: CommitNode| CommitNodeDto {
@@ -955,6 +958,34 @@ async fn commit_file_diff(
     with_engine(&state, move |client| client.commit_file_diff(&sha, &path)).await
 }
 
+#[tauri::command]
+async fn repo_stamp(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let root = state
+        .root
+        .lock()
+        .map_err(|_| "State poisoned".to_string())?
+        .clone();
+    match root {
+        Some(root) => tauri::async_runtime::spawn_blocking(move || git_jet::repo_stamp(&root))
+            .await
+            .map_err(|error| error.to_string()),
+        None => Ok(None),
+    }
+}
+
+/// The recorded git operations (oldest first), for the in-app Op Log viewer.
+#[tauri::command]
+async fn git_op_log() -> Result<Vec<String>, String> {
+    Ok(oplog::lines())
+}
+
+/// Deletes every recorded git operation.
+#[tauri::command]
+async fn clear_git_op_log() -> Result<(), String> {
+    oplog::clear();
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1022,6 +1053,9 @@ fn main() {
             commit_detail,
             commit_file_diff,
             checkout_commit,
+            repo_stamp,
+            git_op_log,
+            clear_git_op_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Git Jet");

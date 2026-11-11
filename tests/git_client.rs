@@ -939,12 +939,19 @@ fn log_filters_narrow_the_graph() {
     commit_change(&dir, "a.txt", "one\n", "alpha work");
     commit_change(&dir, "b.txt", "two\n", "gamma work");
 
-    let all = client.log_nodes(20, false, &LogFilter::default()).unwrap();
+    let all = client.log_nodes(20, 0, false, &LogFilter::default()).unwrap();
     assert_eq!(all.len(), 3);
+
+    // Pagination fetches only the requested window via `--skip`: skip the
+    // two newest commits and the next (oldest) one is "initial commit".
+    let page = client.log_nodes(1, 2, false, &LogFilter::default()).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].commit.subject, "initial commit");
 
     let by_text = client
         .log_nodes(
             20,
+            0,
             false,
             &LogFilter { text: Some("alpha".to_string()), ..LogFilter::default() },
         )
@@ -955,6 +962,7 @@ fn log_filters_narrow_the_graph() {
     let by_author = client
         .log_nodes(
             20,
+            0,
             false,
             &LogFilter { author: Some("nobody".to_string()), ..LogFilter::default() },
         )
@@ -964,6 +972,7 @@ fn log_filters_narrow_the_graph() {
     let by_path = client
         .log_nodes(
             20,
+            0,
             false,
             &LogFilter { path: Some("b.txt".to_string()), ..LogFilter::default() },
         )
@@ -1359,3 +1368,30 @@ fn clone_repository_clones_into_the_destination() {
     assert!(clone_repository(&mut executor, dest.path().to_str().unwrap(), &remote_url, "-x").is_err());
 }
 
+
+#[test]
+fn repo_stamp_tracks_repository_changes() {
+    let dir = init_repo();
+    let root = dir.path().to_str().unwrap();
+
+    let initial = git_jet::repo_stamp(root).expect("stamp for a plain repository");
+    assert!(!initial.is_empty());
+
+    // Staging touches the index -> the stamp must move.
+    write(dir.path(), "more.txt", "content\n");
+    git(dir.path(), &["add", "more.txt"]);
+    let after_stage = git_jet::repo_stamp(root).unwrap();
+    assert_ne!(initial, after_stage, "staging must change the stamp");
+
+    // Nothing happens -> the stamp is stable.
+    let repeat = git_jet::repo_stamp(root).unwrap();
+    assert_eq!(after_stage, repeat, "stamp must be stable without changes");
+
+    // A commit moves HEAD's target ref -> the stamp moves again.
+    git(dir.path(), &["commit", "-q", "-m", "second"]);
+    assert_ne!(after_stage, git_jet::repo_stamp(root).unwrap());
+
+    // A non-repository path has no stamp.
+    let plain = tempfile::tempdir().unwrap();
+    assert!(git_jet::repo_stamp(plain.path().to_str().unwrap()).is_none());
+}

@@ -85,11 +85,12 @@ pub fn parse_decorations(input: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse `git branch --format=...` output.
+/// Parse `for-each-ref --format=...` output for local and remote branches.
 ///
 /// Format fields: `name`, `HEAD`, `upstream:short`, `upstream:track`,
-/// `objectname:short`, `committerdate:relative`, `symref`.
-pub fn parse_branches(input: &str, remote: bool) -> Vec<Branch> {
+/// `objectname:short`, `committerdate:relative`, `symref`, `refname`.
+/// A branch is remote when its refname lives under `refs/remotes`.
+pub fn parse_branches(input: &str) -> Vec<Branch> {
     let mut branches = Vec::new();
     for line in input.lines() {
         let line = line.trim_end_matches('\r');
@@ -109,6 +110,8 @@ pub fn parse_branches(input: &str, remote: bool) -> Vec<Branch> {
             // Skip `origin/HEAD -> origin/main`-style symbolic refs.
             continue;
         }
+        let refname = fields.get(7).copied().unwrap_or("");
+        let remote = refname.starts_with("refs/remotes");
         let current = fields[1].trim() == "*";
         let upstream = fields[2].trim();
         let track = fields[3];
@@ -294,14 +297,15 @@ mod tests {
     #[test]
     fn parses_branches_and_tracking() {
         let input = concat!(
-            "main\u{1f}*\u{1f}origin/main\u{1f}[ahead 2, behind 1]\u{1f}aaaaaaa\u{1f}2 hours ago\u{1f}\n",
-            "feature\u{1f} \u{1f}\u{1f}\u{1f}bbbbbbb\u{1f}3 days ago\u{1f}\n",
-            "old\u{1f} \u{1f}origin/old\u{1f}[gone]\u{1f}ccccccc\u{1f}2 weeks ago\u{1f}\n",
+            "main\u{1f}*\u{1f}origin/main\u{1f}[ahead 2, behind 1]\u{1f}aaaaaaa\u{1f}2 hours ago\u{1f}\u{1f}refs/heads/main\n",
+            "feature\u{1f} \u{1f}\u{1f}\u{1f}bbbbbbb\u{1f}3 days ago\u{1f}\u{1f}refs/heads/feature\n",
+            "old\u{1f} \u{1f}origin/old\u{1f}[gone]\u{1f}ccccccc\u{1f}2 weeks ago\u{1f}\u{1f}refs/heads/old\n",
         );
-        let branches = parse_branches(input, false);
+        let branches = parse_branches(input);
         assert_eq!(branches.len(), 3);
         assert_eq!(branches[0].name, "main");
         assert!(branches[0].current);
+        assert!(!branches[0].remote);
         assert_eq!(branches[0].ahead, 2);
         assert_eq!(branches[0].behind, 1);
         assert_eq!(branches[0].upstream.as_deref(), Some("origin/main"));
@@ -312,9 +316,24 @@ mod tests {
     }
 
     #[test]
+    fn remote_branches_are_recognized_by_refname() {
+        let input = concat!(
+            "origin/main\u{1f} \u{1f}\u{1f}\u{1f}ddddddd\u{1f}1 hour ago\u{1f}\u{1f}refs/remotes/origin/main\n",
+            "main\u{1f}*\u{1f}origin/main\u{1f}\u{1f}aaaaaaa\u{1f}now\u{1f}\u{1f}refs/heads/main\n",
+        );
+        let branches = parse_branches(input);
+        assert_eq!(branches.len(), 2);
+        let remote = branches.iter().find(|branch| branch.name == "origin/main").unwrap();
+        assert!(remote.remote);
+        assert!(branches.iter().find(|branch| branch.name == "main").unwrap().current);
+        // The current branch sorts first even across the mixed input.
+        assert_eq!(branches[0].name, "main");
+    }
+
+    #[test]
     fn skips_symbolic_remote_refs() {
-        let input = "origin/HEAD\u{1f} \u{1f}\u{1f}\u{1f}aaaaaaa\u{1f}now\u{1f}origin/main\n";
-        assert!(parse_branches(input, true).is_empty());
+        let input = "origin/HEAD\u{1f} \u{1f}\u{1f}\u{1f}aaaaaaa\u{1f}now\u{1f}origin/main\u{1f}refs/remotes/origin/HEAD\n";
+        assert!(parse_branches(input).is_empty());
     }
 
     #[test]

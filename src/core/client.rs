@@ -1,15 +1,22 @@
 //! Git command orchestration for Git Jet.
 
+use std::time::Instant;
+
 use super::log::{parse_branches, parse_log_nodes, parse_log_records, parse_raw_entries, parse_stashes, parse_tags};
 use super::model::{
     CmdOutput, Commit, CommitDetail, CommitNode, GitExecutor, LogFilter, RemoteEntry, Rendered,
     StashEntry, StatusReport, TagEntry,
 };
+use super::oplog;
 use super::render;
 use super::request::{DiffMode, GitRequest, RollbackLevel, StashAction};
 use super::status::parse_status_v2;
 
-const BRANCH_FORMAT: &str = "%(refname:short)\u{1f}%(HEAD)\u{1f}%(upstream:short)\u{1f}%(upstream:track)\u{1f}%(objectname:short)\u{1f}%(committerdate:relative)\u{1f}%(symref)";
+/// Fields: `name`, `HEAD`, `upstream:short`, `upstream:track`,
+/// `objectname:short`, `committerdate:relative`, `symref`, `refname`.
+/// The full refname (last field) tells local (`refs/heads/…`) from remote
+/// (`refs/remotes/…`) branches when both are listed in one call.
+const BRANCH_FORMAT: &str = "%(refname:short)\u{1f}%(HEAD)\u{1f}%(upstream:short)\u{1f}%(upstream:track)\u{1f}%(objectname:short)\u{1f}%(committerdate:relative)\u{1f}%(symref)\u{1f}%(refname)";
 const GRAPH_FORMAT: &str = "%h%d %s (%an, %ar)";
 
 /// Resolves the repository root and executes Git commands in it.
@@ -33,10 +40,11 @@ impl<E: GitExecutor> GitClient<E> {
             return Ok(root.clone());
         }
 
-        let output = self.executor.exec(
-            &self.worktree_root,
-            &["rev-parse".to_string(), "--show-toplevel".to_string()],
-        )?;
+        let args = ["rev-parse".to_string(), "--show-toplevel".to_string()];
+        let started = Instant::now();
+        let output = self.executor.exec(&self.worktree_root, &args);
+        oplog::record(&args, &output, started.elapsed(), None);
+        let output = output?;
         if !output.success() {
             let detail = clean_error(&output);
             return Err(format!(
@@ -54,7 +62,10 @@ impl<E: GitExecutor> GitClient<E> {
 
     fn exec_owned(&mut self, args: &[String]) -> Result<CmdOutput, String> {
         let root = self.repo_root()?;
-        self.executor.exec(&root, args)
+        let started = Instant::now();
+        let output = self.executor.exec(&root, args);
+        oplog::record(args, &output, started.elapsed(), None);
+        output
     }
 
     fn exec(&mut self, args: &[&str]) -> Result<CmdOutput, String> {
@@ -84,7 +95,10 @@ impl<E: GitExecutor> GitClient<E> {
 
     fn exec_stdin_owned(&mut self, args: &[String], stdin: &[u8]) -> Result<CmdOutput, String> {
         let root = self.repo_root()?;
-        self.executor.exec_stdin(&root, args, stdin)
+        let started = Instant::now();
+        let output = self.executor.exec_stdin(&root, args, stdin);
+        oplog::record(args, &output, started.elapsed(), Some(stdin.len()));
+        output
     }
 
     fn status_report(&mut self) -> Result<StatusReport, String> {
@@ -147,15 +161,20 @@ impl<E: GitExecutor> GitClient<E> {
         Ok(output.success())
     }
 
-    fn branches(&mut self, remote: bool) -> Result<Vec<super::model::Branch>, String> {
-        let mut args = vec!["branch".to_string(), format!("--format={BRANCH_FORMAT}")];
-        if remote {
-            args.insert(1, "-r".to_string());
-        }
-        let output = self.text_owned(&args)?;
-        Ok(parse_branches(&output, remote))
+    /// Local and remote branches in a single `for-each-ref` invocation
+    /// (previously two `git branch` processes).
+    fn branch_lists(&mut self) -> Result<(Vec<super::model::Branch>, Vec<super::model::Branch>), String> {
+        let output = self.text_owned(&[
+            "for-each-ref".to_string(),
+            "refs/heads".to_string(),
+            "refs/remotes".to_string(),
+            format!("--format={BRANCH_FORMAT}"),
+        ])?;
+        let branches = parse_branches(&output);
+        let local = branches.iter().filter(|b| !b.remote).cloned().collect();
+        let remote = branches.into_iter().filter(|b| b.remote).collect();
+        Ok((local, remote))
     }
-
     /// Run one parsed request and render it as a Git Jet panel.
     pub fn run(&mut self, request: &GitRequest) -> Result<Rendered, String> {
         if matches!(request, GitRequest::Help) {
@@ -202,10 +221,10 @@ impl<E: GitExecutor> GitClient<E> {
                 if *all {
                     args.push("--all".to_string());
                 }
-                let log = if self.has_head()? {
-                    self.text_owned(&args)?
-                } else {
-                    String::new()
+                let log = match self.text_owned(&args) {
+                    Ok(output) => output,
+                    Err(error) if unborn_head_error(&error) => String::new(),
+                    Err(error) => return Err(error),
                 };
                 Ok(render::log(&report, &log, *count, *all))
             }
@@ -216,8 +235,7 @@ impl<E: GitExecutor> GitClient<E> {
             }
             GitRequest::Branches => {
                 let report = self.status_report()?;
-                let local = self.branches(false)?;
-                let remote = self.branches(true)?;
+                let (local, remote) = self.branch_lists()?;
                 Ok(render::branches(&report, &local, &remote))
             }
             GitRequest::Commit { message, amend } => {
@@ -342,10 +360,18 @@ impl<E: GitExecutor> GitClient<E> {
     }
 
     fn diff(&mut self, mode: &DiffMode, paths: &[String]) -> Result<String, String> {
-        if *mode == DiffMode::All && !self.has_head()? {
-            let staged = self.diff_inner(DiffMode::Staged, paths)?;
-            let unstaged = self.diff_inner(DiffMode::Unstaged, paths)?;
-            return Ok(format!("{staged}{unstaged}"));
+        if *mode == DiffMode::All {
+            return match self.diff_inner(mode.clone(), paths) {
+                Ok(text) => Ok(text),
+                // Unborn HEAD: `git diff HEAD` is invalid, fall back to the
+                // staged + unstaged diffs (fresh repository before commit #1).
+                Err(error) if unborn_head_error(&error) => {
+                    let staged = self.diff_inner(DiffMode::Staged, paths)?;
+                    let unstaged = self.diff_inner(DiffMode::Unstaged, paths)?;
+                    Ok(format!("{staged}{unstaged}"))
+                }
+                Err(error) => Err(error),
+            };
         }
         self.diff_inner(mode.clone(), paths)
     }
@@ -644,18 +670,19 @@ impl<E: GitExecutor> GitClient<E> {
 
     /// Commits with parents and ref decorations for the visual graph.
     ///
+    /// `skip` pages through history (`--skip`) so "load more" can fetch just
+    /// the next page instead of the whole prefix.
+    ///
     /// Optional filters narrow the set via git itself (`--grep`, `--author`,
     /// path restriction) or switch the base from the checkout to another
     /// branch.
     pub fn log_nodes(
         &mut self,
         count: usize,
+        skip: usize,
         all: bool,
         filter: &LogFilter,
     ) -> Result<Vec<CommitNode>, String> {
-        if !self.has_head()? {
-            return Ok(Vec::new());
-        }
         let pretty = format!("--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%P%x1f%d%x1e");
         let mut args = vec![
             "log".to_string(),
@@ -664,6 +691,9 @@ impl<E: GitExecutor> GitClient<E> {
             "-n".to_string(),
             count.to_string(),
         ];
+        if skip > 0 {
+            args.push(format!("--skip={skip}"));
+        }
         match &filter.branch {
             Some(branch) => args.push(branch.clone()),
             None => {
@@ -684,14 +714,18 @@ impl<E: GitExecutor> GitClient<E> {
             args.push("--".to_string());
             args.push(path.clone());
         }
-        Ok(parse_log_nodes(&self.text_owned(&args)?))
+        match self.text_owned(&args) {
+            Ok(output) => Ok(parse_log_nodes(&output)),
+            Err(error) if unborn_head_error(&error) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Local and remote branches.
     pub fn list_branches(
         &mut self,
     ) -> Result<(Vec<super::model::Branch>, Vec<super::model::Branch>), String> {
-        Ok((self.branches(false)?, self.branches(true)?))
+        self.branch_lists()
     }
 
     /// All stash entries.
@@ -1800,6 +1834,17 @@ fn git_failure(args: &[String], output: &CmdOutput) -> String {
     }
 }
 
+/// True when a failed command means HEAD is unborn (a repository without
+/// commits yet). Callers render that as an empty log/diff instead of an
+/// error, which replaces an extra `rev-parse HEAD` probe per call.
+fn unborn_head_error(error: &str) -> bool {
+    error.contains("does not have any commits yet")
+        || error.contains("bad default revision")
+        || error.contains("bad revision 'HEAD'")
+        // `git diff HEAD` on an unborn branch phrases it this way.
+        || error.contains("ambiguous argument 'HEAD'")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2142,12 +2187,24 @@ mod tests {
         let mut client = client_with(
             MockExecutor::default()
                 .with(0, "C:/project\n")
-                .with(1, "")
+                // `git diff HEAD` on an unborn branch fails like this.
+                .with_error(128, "fatal: bad revision 'HEAD'")
                 .with(0, "staged diff\n")
                 .with(0, "unstaged diff\n"),
         );
         let diff = client.diff(&DiffMode::All, &[]).unwrap();
         assert_eq!(diff, "staged diff\nunstaged diff\n");
+        // No `rev-parse HEAD` probe ran first — the failing diff decides.
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .all(|call| call[0] != "rev-parse" || call.get(1) != Some(&"--verify".to_string())));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["diff", "--no-color", "--find-renames", "HEAD"]));
         assert!(client
             .executor
             .calls
@@ -2433,12 +2490,12 @@ mod tests {
         let mut client = client_with(
             MockExecutor::default()
                 .with(0, "C:/project\n")
-                .with(0, "abc\n")
                 .with(0, ""),
         );
         client
             .log_nodes(
                 30,
+                0,
                 false,
                 &LogFilter {
                     text: Some("fix".to_string()),
@@ -2463,12 +2520,12 @@ mod tests {
         let mut by_branch = client_with(
             MockExecutor::default()
                 .with(0, "C:/project\n")
-                .with(0, "abc\n")
                 .with(0, ""),
         );
         by_branch
             .log_nodes(
                 30,
+                0,
                 true,
                 &LogFilter {
                     branch: Some("origin/main".to_string()),
@@ -2484,6 +2541,42 @@ mod tests {
             .unwrap();
         assert!(log.iter().any(|arg| arg == "origin/main"));
         assert!(!log.iter().any(|arg| arg == "--all"));
+    }
+
+    #[test]
+    fn log_pagination_skips_loaded_commits() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, ""),
+        );
+        client.log_nodes(100, 100, false, &LogFilter::default()).unwrap();
+        let log = client
+            .executor
+            .calls
+            .iter()
+            .find(|call| call[0] == "log")
+            .unwrap();
+        assert!(log.iter().any(|arg| arg == "--skip=100"), "{log:?}");
+        // The first page does not need a skip at all.
+        assert!(!log.iter().any(|arg| arg.starts_with("--skip=0")), "{log:?}");
+    }
+
+    #[test]
+    fn unborn_head_renders_an_empty_log_instead_of_an_error() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with_error(128, "fatal: your current branch 'main' does not have any commits yet"),
+        );
+        let nodes = client.log_nodes(30, 0, false, &LogFilter::default()).unwrap();
+        assert!(nodes.is_empty());
+        // No `rev-parse HEAD` probe ran first — the log result decides.
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .all(|call| call[0] != "rev-parse" || call[1] != "--verify"));
     }
 
     #[test]

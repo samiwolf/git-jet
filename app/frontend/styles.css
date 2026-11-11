@@ -502,6 +502,22 @@ html, body {
 .compare-columns { display: flex; gap: 12px; }
 .compare-columns > div { flex: 1; min-width: 0; }
 
+/* ---------- op log (git operations viewer) ---------- */
+.oplog-card { width: 860px; }
+.oplog-list {
+  max-height: 55vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 6px 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: text;
+}
+.oplog-line { white-space: pre-wrap; word-break: break-all; color: var(--text); }
+
 /* ---------- merge editor ---------- */
 .merge-card {
   width: min(1500px, 97vw);

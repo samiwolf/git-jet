@@ -7,7 +7,9 @@
 pub mod core;
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::UNIX_EPOCH;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -28,6 +30,12 @@ pub use core::{
 ///
 /// Arguments are passed verbatim (never through a shell), so paths and commit
 /// messages containing spaces or quotes are safe.
+///
+/// `core.fsmonitor` (git's filesystem-watch daemon) and the untracked cache
+/// make repeated `status`/`diff` runs on large repositories dramatically
+/// cheaper: after the first warm-up, git asks the daemon what changed instead
+/// of scanning the worktree. Both are passed per invocation with `-c`, so the
+/// user's repository configuration is never touched.
 fn git_command(root: &str) -> Command {
     let mut command = Command::new("git");
     #[cfg(windows)]
@@ -40,6 +48,10 @@ fn git_command(root: &str) -> Command {
         .arg("color.ui=false")
         .arg("-c")
         .arg("core.quotepath=false")
+        .arg("-c")
+        .arg("core.fsmonitor=true")
+        .arg("-c")
+        .arg("core.untrackedcache=true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
         .env("GIT_OPTIONAL_LOCKS", "0");
@@ -114,5 +126,98 @@ impl Engine {
     /// Full access to the underlying client for request-style operations.
     pub fn client(&mut self) -> &mut GitClient<StdExecutor> {
         &mut self.client
+    }
+}
+
+/// Cheap filesystem signature of the parts of a repository the UI reads.
+///
+/// The auto-refresh timer computes this stamp (a handful of `stat` calls,
+/// no git process) and skips the full `status` re-read while it is
+/// unchanged. It covers the index, `HEAD`, fetch state, merge-state files,
+/// `packed-refs`, the ref files themselves and the worktree root directory.
+///
+/// Returns `None` when the repository layout cannot be resolved; callers
+/// then simply refresh.
+pub fn repo_stamp(worktree_root: &str) -> Option<String> {
+    let root = Path::new(worktree_root);
+    let dot_git = root.join(".git");
+    let git_dir = resolve_git_dir(root, &dot_git)?;
+    let common_dir = resolve_common_dir(&git_dir);
+
+    let mut stamp = String::with_capacity(256);
+    for file in ["index", "HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+        push_entry(&mut stamp, &git_dir.join(file));
+    }
+    push_entry(&mut stamp, &common_dir.join("packed-refs"));
+    push_dir_stamp(&mut stamp, &common_dir.join("refs"));
+    push_entry(&mut stamp, root);
+    Some(stamp)
+}
+
+/// `.git` as a directory, or the target of a `.git` file (worktrees,
+/// submodules), resolved relative to the worktree root.
+fn resolve_git_dir(root: &Path, dot_git: &Path) -> Option<PathBuf> {
+    if dot_git.is_dir() {
+        return Some(dot_git.to_path_buf());
+    }
+    let pointer = std::fs::read_to_string(dot_git).ok()?;
+    let target = pointer.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let path = Path::new(target);
+    Some(if path.is_absolute() { path.to_path_buf() } else { root.join(path) })
+}
+
+/// Linked worktrees keep `index`/`HEAD` in their own git dir but share refs
+/// through a `commondir` pointer.
+fn resolve_common_dir(git_dir: &Path) -> PathBuf {
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(common) if !common.trim().is_empty() => {
+            let path = Path::new(common.trim());
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                git_dir.join(path)
+            }
+        }
+        _ => git_dir.to_path_buf(),
+    }
+}
+
+/// Appends `mtime+size` of one file, or a distinct marker when it is absent.
+fn push_entry(stamp: &mut String, path: &Path) {
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let nanos = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|since_epoch| since_epoch.as_nanos())
+                .unwrap_or(0);
+            let _ = std::fmt::Write::write_fmt(
+                stamp,
+                format_args!("{:x}.{:x};", nanos, metadata.len()),
+            );
+        }
+        Err(_) => stamp.push('-'),
+    }
+}
+
+/// Appends the recursive maximum stamp of every file below `dir`, in a
+/// deterministic order (ref directories are small).
+fn push_dir_stamp(stamp: &mut String, dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        stamp.push('-');
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            push_dir_stamp(stamp, &path);
+        } else {
+            push_entry(stamp, &path);
+        }
     }
 }

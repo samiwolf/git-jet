@@ -8,6 +8,7 @@
 pub mod client;
 pub mod log;
 pub mod model;
+pub mod oplog;
 pub mod render;
 pub mod request;
 pub mod status;
