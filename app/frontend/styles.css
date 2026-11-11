@@ -1,4 +1,21 @@
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMonoVariable.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
+  --font-ui: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Cascadia Mono, Consolas, monospace;
   --bg: #1e1f22;
   --panel: #2b2d30;
   --panel-alt: #313438;
@@ -27,7 +44,7 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+  font: 13px/1.45 var(--font-ui);
   user-select: none;
   overflow: hidden;
 }
@@ -37,7 +54,7 @@ html, body {
   inset: 8px;
   z-index: 200;
   color: var(--deleted);
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
   pointer-events: none;
@@ -344,7 +361,7 @@ html, body {
 .tab.flat { padding: 2px 8px; border-radius: 4px; border: none; }
 .tab.flat.active { color: var(--text); background: var(--panel-alt); border: 1px solid var(--border); }
 
-.log-list { flex: 1; overflow: auto; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.log-list { flex: 1; overflow: auto; font-family: var(--font-mono); font-size: 12px; }
 
 .commit-row { display: flex; align-items: center; cursor: pointer; height: 24px; }
 .commit-row:hover { background: var(--hover); }
@@ -359,18 +376,18 @@ html, body {
   padding: 0 5px;
   font-size: 10px;
   line-height: 16px;
-  font-family: "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
 }
 .ref-badge.head { background: #57965c; }
 .ref-badge.remote { background: #3574f0; }
 .ref-badge.tag { background: #dcb167; color: #1e1f22; }
 .commit-subject { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.commit-meta { color: var(--muted); font-family: "Segoe UI", sans-serif; font-size: 11px; flex: none; padding-left: 8px; }
+.commit-meta { color: var(--muted); font-family: var(--font-ui); font-size: 11px; flex: none; padding-left: 8px; }
 
 .no-commits { color: var(--muted); padding: 20px;text-align: center; }
 
 /* ---------- diff ---------- */
-.diff-view { flex: 1; overflow: auto; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; user-select: text; }
+.diff-view { flex: 1; overflow: auto; font-family: var(--font-mono); font-size: 12px; user-select: text; }
 .diff-file { border-bottom: 1px solid var(--border); }
 .diff-hunk {
   display: flex;
@@ -399,7 +416,7 @@ html, body {
   background: var(--panel);
   color: var(--text);
   font-weight: 600;
-  font-family: "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
   padding: 4px 10px;
   position: sticky;
   top: 0;
@@ -436,10 +453,10 @@ html, body {
   gap: 10px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
-  font-family: "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
 }
 .commit-detail-subject { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.commit-detail-sha { color: var(--accent); font-family: Consolas, monospace; font-size: 12px; }
+.commit-detail-sha { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
 .commit-files { padding-bottom: 4px; }
 
 /* ---------- log filters ---------- */
@@ -511,7 +528,7 @@ html, body {
   border-radius: 4px;
   background: var(--bg);
   padding: 6px 10px;
-  font-family: "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   user-select: text;
