@@ -1998,7 +1998,9 @@ async function doRebaseCurrentOnto(branch) {
     ? `It tracks ${upstream}, so afterwards it will diverge from the remote and pushing needs Force push (--force-with-lease).`
     : "";
   if (!(await confirmDialog(`Rebase '${current}' onto '${branch.name}'?`,
-      `The commits of ${current} that are not in ${branch.name} are replayed on top of ${branch.name}, rewriting ${current}'s history. ${tracked}\n\n` +
+      `The commits that only ${current} has are replayed on top of ${branch.name}: ${current} is rewritten, ${branch.name} stays untouched. ${tracked}\n\n` +
+      `  ${branch.name}: …E─F                       (unchanged)\n` +
+      `  ${current}:     …A─B─C  →  …E─F─A'─B'─C'   (rewritten)\n\n` +
       "Requires a clean working tree; conflicts stop the rebase — resolve, stage, then Continue under Local Changes.",
       { okLabel: "Rebase" }))) return;
   await runHistoryAction(`Rebase '${current}' onto '${branch.name}'`, () =>
@@ -2015,7 +2017,9 @@ async function doCheckoutAndRebaseOntoCurrent(branch) {
     return;
   }
   if (!(await confirmDialog(`Check out ${branch.name} and rebase onto ${current}?`,
-      `${branch.name} is checked out and its commits are replayed on top of ${current}, rewriting ${branch.name}'s history.\n\n` +
+      `${branch.name} is checked out and the commits that only it has are replayed on top of ${current}: ${branch.name} is rewritten, ${current} stays untouched.\n\n` +
+      `  ${current}:   …X─Y─Z                     (unchanged)\n` +
+      `  ${branch.name}: …P─Q  →  …X─Y─Z─P'─Q'   (rewritten)\n\n` +
       "Requires a clean working tree; conflicts stop the rebase — resolve, stage, then Continue under Local Changes.",
       { okLabel: "Checkout and Rebase" }))) return;
   try {
