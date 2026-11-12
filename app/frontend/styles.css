@@ -39,6 +39,21 @@
 
 * { box-sizing: border-box; }
 
+/* ---------- scrollbars ---------- */
+
+/* Slim, theme-matched scrollbars (Chromium/WebView2). The transparent border
+   shrinks the visible thumb inside the track so it feels like an overlay. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+::-webkit-scrollbar-corner { background: transparent; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -77,6 +92,17 @@ html, body {
   flex: none;
 }
 .toolbar-sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+
+/* ---------- toolbar action accents ---------- */
+
+/* Border tints for the top actions, matching the app's color language:
+   fetch = accent blue, pull = amber (incoming ↓), push = green (outgoing ↑). */
+#fetch-btn { border-color: rgba(53, 116, 240, 0.55); }
+#fetch-btn:hover { border-color: var(--accent); }
+#pull-btn { border-color: rgba(220, 177, 103, 0.5); }
+#pull-btn:hover { border-color: var(--modified); }
+#push-btn { border-color: rgba(73, 156, 84, 0.55); }
+#push-btn:hover { border-color: var(--added); }
 
 .btn {
   background: var(--panel-alt);
@@ -292,6 +318,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .file-row.selected { background: var(--selected); }
 .file-kind { width: 14px; text-align: center; font-weight: 700; flex: none; }
 .file-path { overflow: hidden; text-overflow: ellipsis; }
+/* Deleted entries are struck through so they read as removals, not edits. */
+.file-row.deleted .file-path { text-decoration: line-through; }
 .file-dir { color: var(--muted); }
 .file-action {
   margin-left: auto;

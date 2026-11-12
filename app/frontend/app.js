@@ -413,8 +413,8 @@ function renderBranchBar(status) {
 
   const behind = branch.behind || 0;
   const ahead = branch.ahead || 0;
-  $("pull-btn").textContent = behind > 0 ? `Pull ↓${behind}` : "Pull";
-  $("push-btn").textContent = ahead > 0 ? `Push ↑${ahead}` : "Push";
+  $("pull-btn").textContent = behind > 0 ? `Pull ↓${behind}` : "Pull ↓";
+  $("push-btn").textContent = ahead > 0 ? `Push ↑${ahead}` : "Push ↑";
   $("stash-button").replaceChildren(
     document.createTextNode("Stash "),
     status.stashCount > 0 ? el("span", "count-badge", status.stashCount) : document.createTextNode(""),
@@ -424,6 +424,8 @@ function renderBranchBar(status) {
 
 function fileRow(entry, section, onSelect) {
   const row = el("div", "file-row");
+  // Deletion shows as `D` in the side's status letter, not in `kind`.
+  if (entry.index === "D" || entry.worktree === "D") row.classList.add("deleted");
   const [dir, base] = splitPath(entry.displayPath);
   const kind = el("span", `file-kind ${KIND_CLASS[entry.kind] || ""}`, KIND_LETTER[entry.kind] || "?");
   const path = el("span", "file-path");
@@ -662,7 +664,7 @@ function repoMenuItems() {
     { label: `Stash all changes (${stashes} existing)`, hint: "stash push", run: () =>
       runAction("Stash push", () => invoke("stash_push", { message: $("stash-message").value.trim() })) },
     { sep: true },
-    { label: "Fetch ⮁ All", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
+    { label: "Fetch ⮁", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
     { label: "Incoming commits…", hint: `↓ ${behind}`, run: openIncomingDialog },
     { label: "Manage remotes…", run: openRemotesDialog },
     { label: "Reset changes (hard)", danger: true, run: async () =>
@@ -2143,13 +2145,15 @@ async function submitPullDialog() {
   const ffOnly = strategy ? strategy.value === "ff" : false;
   $("pull-error").textContent = "";
   try {
-    const output = await invoke("pull_options", {
+    setStatus("Pulling…");
+    await invoke("pull_options", {
       remote: $("pull-remote").value.trim() || null,
       branch: $("pull-branch").value.trim() || null,
       ffOnly,
     });
     hide($("pull-dialog"));
-    setStatus(truncate(String(output || "Pull complete"), 3));
+    /* The raw git output stays in the Op Log; the status bar stays quiet. */
+    setStatus("Pull done");
     await Promise.all([refreshStatus(), refreshLog(false), refreshBranches()]);
   } catch (error) {
     $("pull-error").textContent = errorText(error);
@@ -2239,7 +2243,7 @@ function renderBranchList(container, branches) {
     if (!branch.current && !branch.remote) {
       row.classList.add("switchable");
     } else if (branch.remote) {
-      action2(row, branch);
+      // action2(row, branch);
     }
     row.addEventListener("click", async () => {
       if (branch.current || branch.remote) return;
@@ -2319,15 +2323,15 @@ function renderBranchList(container, branches) {
 }
 
 /* Copy a remote branch name to the clipboard (the "…" action). */
-function action2(row, branch) {
-  const action = el("span", "file-action", "⧉");
-  action.title = "Copy branch name";
-  action.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void copyText(branch.name);
-  });
-  row.append(action);
-}
+// function action2(row, branch) {
+//   const action = el("span", "file-action", "⧉");
+//   action.title = "Copy branch name";
+//   action.addEventListener("click", (event) => {
+//     event.stopPropagation();
+//     void copyText(branch.name);
+//   });
+//   row.append(action);
+// }
 
 /* ------------------------------------------------------------- op log */
 
