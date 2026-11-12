@@ -154,7 +154,8 @@ function truncate(text, limit = 600) {
 /* Disable a button while its async work is in flight so repeated clicks
    are no-ops. The button always re-enables, even when the work throws. */
 async function guardButton(btn, fn) {
-  if (!btn || btn.disabled) return undefined;
+  if (!btn) return fn();
+  if (btn.disabled) return undefined;
   btn.disabled = true;
   btn.classList.add("busy");
   try {
@@ -2317,12 +2318,13 @@ function renderBranchList(container, branches) {
   }
 }
 
+/* Copy a remote branch name to the clipboard (the "…" action). */
 function action2(row, branch) {
-  const action = el("span", "file-action", "…");
+  const action = el("span", "file-action", "⧉");
   action.title = "Copy branch name";
   action.addEventListener("click", (event) => {
     event.stopPropagation();
-    setStatus(branch.name);
+    void copyText(branch.name);
   });
   row.append(action);
 }
