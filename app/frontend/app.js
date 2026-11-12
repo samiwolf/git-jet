@@ -89,6 +89,312 @@ const LANE_COLORS = [
 /* Horizontal distance between two graph lanes (px). */
 const LANE_W = 14;
 
+/* ------------------------------------------------------- appearance settings */
+
+/* Themes are 10 presets, each shipping a dark and a light palette; the
+   mode toggle picks which side is active. Every palette lists the same
+   base colors; translucent tints are derived so the pair stays in sync. */
+const THEMES = [
+  {
+    id: "jet",
+    name: "JetBrains",
+    dark: {
+      bg: "#1e1f22", panel: "#2b2d30", panelAlt: "#313438", border: "#43454a",
+      text: "#dfe1e5", muted: "#9da0a8", accent: "#3574f0", accentDim: "#2b5db8",
+      hover: "#3d4147", selected: "#2e4a78",
+      added: "#499c54", modified: "#dcb167", deleted: "#f75464",
+      renamed: "#4a88c7", conflict: "#d570b6", untracked: "#6a9dc5",
+      hunkBg: "#2c3b50", hunkText: "#7c93b0", addedText: "#b8e6bf", removedText: "#f2b8bd",
+    },
+    light: {
+      bg: "#ffffff", panel: "#f7f8fa", panelAlt: "#edeff2", border: "#d8dbe0",
+      text: "#1e232d", muted: "#6c707e", accent: "#3574f0", accentDim: "#2b5db8",
+      hover: "#e6e9ee", selected: "#d4e2ff",
+      added: "#368746", modified: "#9c6f16", deleted: "#d0404f",
+      renamed: "#3d7fb8", conflict: "#c0439a", untracked: "#4b83b4",
+      hunkBg: "#eef4fb", hunkText: "#61748c", addedText: "#25672f", removedText: "#b03140",
+    },
+  },
+  {
+    id: "dracula",
+    name: "Dracula",
+    dark: {
+      bg: "#282a36", panel: "#2f3141", panelAlt: "#37394a", border: "#44475a",
+      text: "#f8f8f2", muted: "#6272a4", accent: "#bd93f9", accentDim: "#6c4bb5",
+      hover: "#3d4152", selected: "#44475a",
+      added: "#50fa7b", modified: "#f1fa8c", deleted: "#ff5555",
+      renamed: "#8be9fd", conflict: "#ff79c6", untracked: "#719aff",
+      hunkBg: "#3d4157", hunkText: "#b0b8d8", addedText: "#a6f7be", removedText: "#ffb3bf",
+    },
+    light: {
+      bg: "#f8f8f2", panel: "#eeeee6", panelAlt: "#e3e3da", border: "#cfcec5",
+      text: "#282a36", muted: "#6272a4", accent: "#6c4bb5", accentDim: "#583d99",
+      hover: "#e0e0d6", selected: "#d9d6f5",
+      added: "#1f9d55", modified: "#9d7d00", deleted: "#cb3a53",
+      renamed: "#137a99", conflict: "#b33a9b", untracked: "#2b7bb9",
+      hunkBg: "#e8e6dc", hunkText: "#6b6d84", addedText: "#0e6a38", removedText: "#b81f3a",
+    },
+  },
+  {
+    id: "nord",
+    name: "Nord",
+    dark: {
+      bg: "#2e3440", panel: "#3b4252", panelAlt: "#434c5e", border: "#4c566a",
+      text: "#eceff4", muted: "#8b97ab", accent: "#88c0d0", accentDim: "#5e9db5",
+      hover: "#434c5e", selected: "#4c566a",
+      added: "#a3be8c", modified: "#ebcb8b", deleted: "#bf616a",
+      renamed: "#81a1c1", conflict: "#b48ead", untracked: "#8fbcbb",
+      hunkBg: "#3b4a60", hunkText: "#8da2bd", addedText: "#c9dab1", removedText: "#e5aeb4",
+    },
+    light: {
+      bg: "#eceff4", panel: "#e5e9f0", panelAlt: "#d8dee9", border: "#b8c2cf",
+      text: "#2e3440", muted: "#67748a", accent: "#2187a3", accentDim: "#1c6f87",
+      hover: "#dce0e7", selected: "#cfdcea",
+      added: "#5e7f42", modified: "#a07a2c", deleted: "#ab424e",
+      renamed: "#3f76a3", conflict: "#975d84", untracked: "#348b8a",
+      hunkBg: "#dfe5ee", hunkText: "#6e7d8d", addedText: "#3d5c26", removedText: "#96333c",
+    },
+  },
+  {
+    id: "solarized",
+    name: "Solarized",
+    dark: {
+      bg: "#002b36", panel: "#073642", panelAlt: "#0a3f4d", border: "#14505e",
+      text: "#93a1a1", muted: "#586e75", accent: "#268bd2", accentDim: "#1f6fa8",
+      hover: "#124957", selected: "#175061",
+      added: "#859900", modified: "#b58900", deleted: "#dc322f",
+      renamed: "#2aa198", conflict: "#d33682", untracked: "#6c71c4",
+      hunkBg: "#0f4655", hunkText: "#5f7f8a", addedText: "#b3cc4e", removedText: "#ec6a67",
+    },
+    light: {
+      bg: "#fdf6e3", panel: "#eee8d5", panelAlt: "#e3dcc9", border: "#d0c5aa",
+      text: "#586e75", muted: "#93a1a1", accent: "#268bd2", accentDim: "#1f6fa8",
+      hover: "#eae3d0", selected: "#ddd4b9",
+      added: "#6b7a00", modified: "#a57600", deleted: "#dc322f",
+      renamed: "#2aa198", conflict: "#d33682", untracked: "#6c71c4",
+      hunkBg: "#ede5cf", hunkText: "#8b9184", addedText: "#6b7a00", removedText: "#c02c29",
+    },
+  },
+  {
+    id: "one",
+    name: "One",
+    dark: {
+      bg: "#282c34", panel: "#2c313a", panelAlt: "#333842", border: "#3e4451",
+      text: "#abb2bf", muted: "#7f848e", accent: "#61afef", accentDim: "#4b8fd0",
+      hover: "#353b45", selected: "#3a4354",
+      added: "#98c379", modified: "#e5c07b", deleted: "#e06c75",
+      renamed: "#56b6c2", conflict: "#c678dd", untracked: "#d19a66",
+      hunkBg: "#333844", hunkText: "#8b93a5", addedText: "#b3e296", removedText: "#ee9aa1",
+    },
+    light: {
+      bg: "#fafafa", panel: "#f0f0f0", panelAlt: "#e8e8e8", border: "#dcdcdc",
+      text: "#383a42", muted: "#9da0a6", accent: "#4078f2", accentDim: "#3263cd",
+      hover: "#e6e6e6", selected: "#d7e8fb",
+      added: "#50a14f", modified: "#c18401", deleted: "#e45649",
+      renamed: "#0184bc", conflict: "#a626a4", untracked: "#986801",
+      hunkBg: "#edf1f5", hunkText: "#7e848d", addedText: "#35822e", removedText: "#c43d33",
+    },
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    dark: {
+      bg: "#0d1117", panel: "#161b22", panelAlt: "#21262d", border: "#30363d",
+      text: "#e6edf3", muted: "#8b949e", accent: "#2f81f7", accentDim: "#1f6feb",
+      hover: "#232a33", selected: "#284064",
+      added: "#3fb950", modified: "#d29922", deleted: "#f85149",
+      renamed: "#a371f7", conflict: "#db61a2", untracked: "#539bf5",
+      hunkBg: "#1c2c40", hunkText: "#8599b5", addedText: "#7ee787", removedText: "#ffb1ab",
+    },
+    light: {
+      bg: "#ffffff", panel: "#f6f8fa", panelAlt: "#eff2f5", border: "#d0d7de",
+      text: "#1f2328", muted: "#656d76", accent: "#0969da", accentDim: "#0550ae",
+      hover: "#eaedf1", selected: "#d3e5f9",
+      added: "#1a7f37", modified: "#9a6700", deleted: "#cf222e",
+      renamed: "#8250df", conflict: "#bf3989", untracked: "#0969da",
+      hunkBg: "#e6f0fb", hunkText: "#67707c", addedText: "#116329", removedText: "#a40e26",
+    },
+  },
+  {
+    id: "monokai",
+    name: "Monokai",
+    dark: {
+      bg: "#272822", panel: "#31312a", panelAlt: "#3b3a32", border: "#49483e",
+      text: "#f8f8f2", muted: "#8e8e80", accent: "#66d9ef", accentDim: "#47a9bd",
+      hover: "#3e3d32", selected: "#49483e",
+      added: "#a6e22e", modified: "#e6db74", deleted: "#f92672",
+      renamed: "#fd971f", conflict: "#ae81ff", untracked: "#5fb3d3",
+      hunkBg: "#3a3a30", hunkText: "#a6a58f", addedText: "#c9f15e", removedText: "#ff96a4",
+    },
+    light: {
+      bg: "#f9f8f5", panel: "#f0efe8", panelAlt: "#e5e4dc", border: "#cfcec6",
+      text: "#272822", muted: "#75715e", accent: "#1895ad", accentDim: "#0f7a8c",
+      hover: "#e9e8e0", selected: "#d5e8ec",
+      added: "#679b0d", modified: "#9d8700", deleted: "#d61a5e",
+      renamed: "#ca6c0f", conflict: "#6f43d6", untracked: "#3b93c4",
+      hunkBg: "#ebeae2", hunkText: "#8a887c", addedText: "#4c7a05", removedText: "#b3114d",
+    },
+  },
+  {
+    id: "tokyo",
+    name: "Tokyo Night",
+    dark: {
+      bg: "#1a1b26", panel: "#24283b", panelAlt: "#2e3350", border: "#3b4261",
+      text: "#c0caf5", muted: "#565f89", accent: "#7aa2f7", accentDim: "#4f74d6",
+      hover: "#2f334d", selected: "#333f5c",
+      added: "#9ece6a", modified: "#e0af68", deleted: "#f7768e",
+      renamed: "#7dcfff", conflict: "#bb9af7", untracked: "#2ac3de",
+      hunkBg: "#283457", hunkText: "#8b9bd8", addedText: "#c5e78d", removedText: "#ff9baa",
+    },
+    light: {
+      bg: "#e1e2e7", panel: "#eceef4", panelAlt: "#dfe2ea", border: "#c4c8da",
+      text: "#3760bf", muted: "#8992b8", accent: "#2e7de9", accentDim: "#2160c9",
+      hover: "#dadde5", selected: "#cbd8f4",
+      added: "#587539", modified: "#8c6c3e", deleted: "#c93a68",
+      renamed: "#0a7a9c", conflict: "#7847c0", untracked: "#1189ab",
+      hunkBg: "#d9e0f0", hunkText: "#6c78a3", addedText: "#3f5e26", removedText: "#b3264e",
+    },
+  },
+  {
+    id: "catppuccin",
+    name: "Catppuccin",
+    dark: {
+      bg: "#1e1e2e", panel: "#24243c", panelAlt: "#313244", border: "#45475a",
+      text: "#cdd6f4", muted: "#9399b2", accent: "#89b4fa", accentDim: "#6183e0",
+      hover: "#45475a", selected: "#484b64",
+      added: "#a6e3a1", modified: "#f9e2af", deleted: "#f38ba8",
+      renamed: "#94e2d5", conflict: "#cba6f7", untracked: "#89dceb",
+      hunkBg: "#313246", hunkText: "#9aa2c4", addedText: "#c7efc1", removedText: "#fcb3c3",
+    },
+    light: {
+      bg: "#eff1f5", panel: "#e6e9ef", panelAlt: "#dce0e8", border: "#bcc0cc",
+      text: "#4c4f69", muted: "#7d7f98", accent: "#1e66f5", accentDim: "#1552c9",
+      hover: "#dfe1e8", selected: "#ccd9f8",
+      added: "#40a02b", modified: "#a67c00", deleted: "#d20f39",
+      renamed: "#179299", conflict: "#8839ef", untracked: "#04a5e5",
+      hunkBg: "#e0e5ef", hunkText: "#7d8299", addedText: "#2b7a1b", removedText: "#b31840",
+    },
+  },
+  {
+    id: "contrast",
+    name: "High Contrast",
+    dark: {
+      bg: "#000000", panel: "#101010", panelAlt: "#1a1a1a", border: "#555555",
+      text: "#ffffff", muted: "#b0b0b0", accent: "#3d9bff", accentDim: "#0f6ecc",
+      hover: "#2a2a2a", selected: "#17447c",
+      added: "#00c853", modified: "#ffc400", deleted: "#ff5252",
+      renamed: "#66b3ff", conflict: "#ff7ad9", untracked: "#55d9ff",
+      hunkBg: "#122c42", hunkText: "#9cc3e8", addedText: "#80ffa3", removedText: "#ffabab",
+    },
+    light: {
+      bg: "#ffffff", panel: "#f2f2f2", panelAlt: "#e6e6e6", border: "#808080",
+      text: "#000000", muted: "#595959", accent: "#0057d8", accentDim: "#0047a8",
+      hover: "#dcdcdc", selected: "#c3ddfc",
+      added: "#008a2e", modified: "#8f6b00", deleted: "#cc0000",
+      renamed: "#6d28c9", conflict: "#b3008a", untracked: "#007fa8",
+      hunkBg: "#dce8f4", hunkText: "#4d6785", addedText: "#006628", removedText: "#a80000",
+    },
+  },
+];
+
+const SETTINGS_KEY = "gitjet.settings";
+const FONT_MIN = 11;
+const FONT_MAX = 18;
+const FONT_DEFAULT = 13;
+
+/* Expand a base palette into the CSS custom properties the stylesheet uses,
+   deriving the translucent tints so dark/light stay consistent. */
+function applyPalette(palette, dark) {
+  const root = document.documentElement;
+  const set = (name, value) => root.style.setProperty(name, value);
+  set("--bg", palette.bg);
+  set("--panel", palette.panel);
+  set("--panel-alt", palette.panelAlt);
+  set("--border", palette.border);
+  set("--text", palette.text);
+  set("--muted", palette.muted);
+  set("--accent", palette.accent);
+  set("--accent-dim", palette.accentDim);
+  set("--hover", palette.hover);
+  set("--selected", palette.selected);
+  set("--added", palette.added);
+  set("--added-bg", alpha(palette.added, 0.16));
+  set("--modified", palette.modified);
+  set("--modified-bg", alpha(palette.modified, 0.12));
+  set("--deleted", palette.deleted);
+  set("--deleted-bg", alpha(palette.deleted, 0.14));
+  set("--renamed", palette.renamed);
+  set("--conflict", palette.conflict);
+  set("--conflict-bg", alpha(palette.conflict, 0.08));
+  set("--untracked", palette.untracked);
+  set("--diff-hunk-bg", palette.hunkBg);
+  set("--diff-hunk-text", palette.hunkText);
+  set("--diff-hunk-btn-bg", alpha(palette.text, dark ? 0.08 : 0.35));
+  set("--diff-hunk-btn-border", alpha(palette.text, dark ? 0.2 : 0.35));
+  set("--added-text", palette.addedText);
+  set("--removed-text", palette.removedText);
+  set("--split-blank", dark ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.03)");
+  set("--theirs-bg", alpha(palette.renamed, 0.16));
+  set("--accent-bg", alpha(palette.accent, 0.14));
+  set("--fetch-tint", alpha(palette.accent, 0.55));
+  set("--pull-tint", alpha(palette.modified, 0.5));
+  set("--push-tint", alpha(palette.added, 0.55));
+  set("--tag-text", dark ? palette.bg : "#ffffff");
+}
+
+/* "#rrggbb" (or "#rgb") + alpha → rgba() string. */
+function alpha(hex, a) {
+  const raw = hex.replace("#", "");
+  const full = raw.length === 3
+    ? raw.split("").map((c) => c + c).join("")
+    : raw.slice(0, 6);
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/* Persisted appearance: theme preset, light/dark mode, UI font size. */
+const defaultAppearance = { theme: "jet", mode: "dark", fontSize: FONT_DEFAULT };
+let appearance = loadAppearance();
+
+function loadAppearance() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (saved && typeof saved === "object") {
+      return {
+        theme: THEMES.some((t) => t.id === saved.theme) ? saved.theme : defaultAppearance.theme,
+        mode: saved.mode === "light" ? "light" : "dark",
+        fontSize: clampFontSize(saved.fontSize),
+      };
+    }
+  } catch { /* ignore corrupt value */ }
+  return { ...defaultAppearance };
+}
+
+function clampFontSize(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size)) return FONT_DEFAULT;
+  return Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(size)));
+}
+
+function saveAppearance() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(appearance));
+}
+
+function applyAppearance() {
+  const theme = THEMES.find((t) => t.id === appearance.theme) || THEMES[0];
+  const dark = appearance.mode !== "light";
+  applyPalette(dark ? theme.dark : theme.light, dark);
+  const root = document.documentElement;
+  root.style.setProperty("--fs-ui", `${appearance.fontSize}px`);
+  root.style.setProperty("--fs-mono", `${appearance.fontSize - 1}px`);
+  root.style.setProperty("--fs-small", `${appearance.fontSize - 2}px`);
+}
+
+/* Apply before the first paint: the script tag sits at the end of <body>. */
+applyAppearance();
+
 /* ------------------------------------------------------------------ state */
 
 const state = {
@@ -141,6 +447,8 @@ function setStatus(text, isError) {
   const bar = $("status-bar") || $("status-text").parentElement;
   const node = $("status-text");
   node.textContent = text;
+  /* The bar clips to one line; the hover tooltip carries the full message. */
+  node.title = text;
   lastStatusMessage = text;
   messageLog.push({ time: new Date(), text, error: Boolean(isError) });
   if (messageLog.length > 1000) messageLog.shift();
@@ -1604,9 +1912,63 @@ function closeDialogs() {
     "pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog",
     "incoming-dialog", "remotes-dialog", "message-dialog", "clone-dialog",
     "oplog-dialog", "confirm-dialog", "bisect-dialog", "worktrees-dialog",
+    "settings-dialog",
   ]) {
     hide($(id));
   }
+}
+
+/* ------------------------------------------------- appearance settings UI */
+
+function openSettingsDialog() {
+  renderSettingsDialog();
+  show($("settings-dialog"));
+}
+
+function renderSettingsDialog() {
+  const activePalette = (theme) => theme[appearance.mode === "light" ? "light" : "dark"];
+
+  /* Theme grid: each preset shows a live preview of its palette. */
+  const grid = $("theme-grid");
+  grid.textContent = "";
+  for (const theme of THEMES) {
+    const pal = activePalette(theme);
+    const button = el("button", "theme-swatch" + (theme.id === appearance.theme ? " active" : ""));
+    button.type = "button";
+    button.title = `${theme.name} — ${appearance.mode === "light" ? "light" : "dark"} palette`;
+    const preview = el("span", "theme-preview");
+    for (const color of [pal.bg, pal.panel, pal.accent, pal.added, pal.modified, pal.deleted]) {
+      const dot = el("span", "theme-dot");
+      dot.style.background = color;
+      preview.appendChild(dot);
+    }
+    button.appendChild(preview);
+    button.appendChild(el("span", "theme-name", theme.name));
+    button.addEventListener("click", () => {
+      appearance.theme = theme.id;
+      saveAppearance();
+      applyAppearance();
+      renderSettingsDialog();
+    });
+    grid.appendChild(button);
+  }
+
+  /* Dark / light toggle for the selected preset. */
+  for (const button of document.querySelectorAll("[data-mode-toggle]")) {
+    button.classList.toggle("active", button.dataset.modeToggle === appearance.mode);
+  }
+
+  /* Font size stepper. */
+  $("font-size-value").textContent = `${appearance.fontSize} px`;
+  $("font-dec").disabled = appearance.fontSize <= FONT_MIN;
+  $("font-inc").disabled = appearance.fontSize >= FONT_MAX;
+}
+
+function changeFontSize(delta) {
+  appearance.fontSize = clampFontSize(appearance.fontSize + delta);
+  saveAppearance();
+  applyAppearance();
+  renderSettingsDialog();
 }
 
 /* Promise-based confirmation dialog replacing the native window.confirm:
@@ -1873,7 +2235,7 @@ function mergeButton(label, run) {
 }
 
 /* One grid row per segment keeps all three panes aligned; scrolling the
-   body scrolls them together, like JetBrains' merged-result layout. */
+   body scrolls them together, merged-result layout style. */
 function renderMergeEditor() {
   const body = $("merge-body");
   body.replaceChildren();
@@ -2003,7 +2365,7 @@ function currentBranchName() {
   return status.branch.name || null;
 }
 
-/* WebStorm-style "Rebase '<current>' onto '<selected>'": replays the
+/* "Rebase '<current>' onto '<selected>'": replays the
    current branch's unique commits on top of the selected branch, without
    checking anything out (git rebase <selected>). The current branch's
    history is rewritten; if it tracks a remote it diverges and a later
@@ -2031,7 +2393,7 @@ async function doRebaseCurrentOnto(branch) {
   await Promise.all([refreshLog(false), refreshBranches()]);
 }
 
-/* WebStorm-style "Checkout and Rebase onto Current": check the selected
+/* "Checkout and Rebase onto Current": check the selected
    branch out and replay it on top of the previously current branch. */
 async function doCheckoutAndRebaseOntoCurrent(branch) {
   const current = currentBranchName();
@@ -2394,12 +2756,9 @@ async function openBisectDialog() {
 }
 
 async function refreshBisectDialog() {
-  const status = state.loadedStatus;
-  const bisecting = Boolean(status && status.bisectInProgress);
-  const section = $("bisect-active");
+  const bisecting = Boolean(state.loadedStatus && state.loadedStatus.bisectInProgress);
   const start = $("bisect-start-row");
   const marks = $("bisect-marks");
-  section.classList.toggle("hidden", !bisecting);
   start.classList.toggle("hidden", bisecting);
   marks.classList.toggle("hidden", !bisecting);
   if (!bisecting) {
@@ -2608,7 +2967,7 @@ async function switchToBranch(branch) {
   await runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }));
 }
 
-/* Check out a remote branch, WebStorm-style: an existing local branch with
+/* Check out a remote branch: an existing local branch with
    the same name is switched to, otherwise a new local branch tracking the
    remote one is created. */
 async function checkoutRemoteBranch(branch) {
@@ -2673,7 +3032,7 @@ function renderBranchList(container, branches, filtering = false) {
           hide($("branch-menu"));
           void doMergeIntoCurrent(branch.name, false);
         } });
-        /* WebStorm wording: the item names the branch that gets REWRITTEN
+        /* The item names the branch that gets REWRITTEN
            first. Rebase '<current>' onto '<selected>' replays the current
            branch's unique commits on top of the selected branch. */
         if (current) {
@@ -2975,6 +3334,26 @@ function boot() {
   $("oplog-btn").addEventListener("click", () => void openOpLog());
   $("oplog-close").addEventListener("click", () => hide($("oplog-dialog")));
   $("oplog-clear").addEventListener("click", () => void guardButton($("oplog-clear"), clearOpLog));
+
+  /* appearance settings (live-applied theme / mode / font size) */
+  $("settings-btn").addEventListener("click", openSettingsDialog);
+  $("settings-close").addEventListener("click", () => hide($("settings-dialog")));
+  $("settings-reset").addEventListener("click", () => {
+    appearance = { ...defaultAppearance };
+    saveAppearance();
+    applyAppearance();
+    renderSettingsDialog();
+  });
+  for (const button of document.querySelectorAll("[data-mode-toggle]")) {
+    button.addEventListener("click", () => {
+      appearance.mode = button.dataset.modeToggle;
+      saveAppearance();
+      applyAppearance();
+      renderSettingsDialog();
+    });
+  }
+  $("font-dec").addEventListener("click", () => changeFontSize(-1));
+  $("font-inc").addEventListener("click", () => changeFontSize(1));
   for (const button of document.querySelectorAll("[data-oplog-tab]")) {
     button.addEventListener("click", () => {
       oplogTab = button.dataset.oplogTab;
@@ -3276,6 +3655,10 @@ function boot() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "F5") void guardButton($("refresh-btn"), refreshAll);
     if (event.key === "Escape") closeDialogs();
+    if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+      event.preventDefault();
+      if ($("settings-dialog").classList.contains("hidden")) openSettingsDialog();
+    }
   });
 
   /* Auto refresh: while the window is focused, poll a cheap filesystem

@@ -31,16 +31,17 @@ Windows, macOS and Linux, built with [Tauri](https://tauri.app).
 - **Log** — a colored commit graph with branch, tag and `HEAD` ref badges;
   "load more" pagination and an "all branches" toggle. Filters narrow the
   graph by message text, author (case-insensitive) and path, all executed by
-  git itself. Right-click a commit to cherry-pick, revert, drop, undo,
-  reword its message, squash it into its parent, reset the branch to it or
-  create a tag. While a bisect session runs, the same menu offers
+  git itself. Right-click a commit to show its diff, check it out (detached
+  HEAD), cherry-pick, revert, drop, undo, reword its message, squash it into
+  its parent, reset the branch to it (soft / mixed / hard), create a tag, or
+  copy its hash and subject. While a bisect session runs, the same menu offers
   **Mark good / Mark bad / Skip** for that commit. Rewrites use git plumbing
   (`hash-object` + `update-ref` with a compare-and-swap), so they preserve
   merges, never move the working tree and keep authors intact.
 - **Rebase** — rebase the current branch onto any branch or commit
   (`git rebase <target>`), and pull `--rebase` as a third pull-dialog
-  strategy. The branch context menu mirrors WebStorm's wording, naming the
-  branch that gets **rewritten** first: on a non-current branch,
+  strategy. The branch context menu names the branch that gets
+  **rewritten** first: on a non-current branch,
   **Rebase '&lt;current&gt;' onto '&lt;selected&gt;'** replays the current
   branch's commits on top of the selected one without switching, and
   **Checkout and Rebase onto Current** checks the selected branch out and
@@ -89,13 +90,29 @@ Windows, macOS and Linux, built with [Tauri](https://tauri.app).
 - **Tags** — a toolbar menu to list, create (at HEAD or any ref), delete and
   push tags.
 - **Stashes** — push (with an optional message), pop, apply and drop.
+- **Commit bar** — a message box with a **Commit** button and an **Amend**
+  checkbox that folds your changes into the last commit instead of creating
+  a new one (`Ctrl+Enter` commits from the message box).
 - **Toolbar** — fetch (all), fetch **and prune** (drops remote-tracking
-  branches the remote no longer has), pull/push dialogs, refresh (`F5`) and
-  a status bar that keeps the last action visible. The status re-reads itself
-  every 15 seconds while the window is focused — a cheap filesystem signature
-  of the repository (index, `HEAD`, refs, merge/rebase/bisect state) skips
+  branches the remote no longer has), pull/push dialogs, remotes, the
+  operation log, appearance settings, refresh (`F5`) and a status bar that
+  keeps the last action visible. A right-click menu on the background
+  gathers the same actions (fetch/prune, incoming commits, remotes,
+  worktrees, bisect, a hard reset of all changes) plus Refresh. The status
+  re-reads itself every 15 seconds while the window is focused — a cheap
+  filesystem signature of the repository (index, `HEAD`, refs,
+  merge/rebase/bisect state) skips
   the git work when nothing has changed, so external changes still show up
   without a manual refresh.
+- **Appearance** — a settings dialog (⚙ in the toolbar, `Ctrl+,`) to
+  customize the whole UI: **10 theme presets** — JetBrains, Dracula, Nord,
+  Solarized, One, GitHub, Monokai, Tokyo Night, Catppuccin and High Contrast
+  — each shipping a dark and a light palette, a **light/dark toggle** for
+  the selected preset, and a **font-size stepper** (11–18 px) that scales
+  the whole interface. Every change applies immediately, no restart needed,
+  and is remembered between runs; **Reset** restores the defaults. Settings
+  live in the WebView's local storage alongside the recent-repositories
+  list and the remembered panel width — nothing is written outside the app.
 - **Op Log** — a viewer for the last 1000 git commands Git Jet ran this
   session (arguments, outcome and duration, newest first) with a
   clear-log button. A second tab, **Status messages**, lists every

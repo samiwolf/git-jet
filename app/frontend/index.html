@@ -72,6 +72,7 @@
 
         <div class="spacer"></div>
 
+        <button id="settings-btn" class="btn" title="Appearance: theme, light/dark mode and font size">⚙</button>
         <button id="refresh-btn" class="btn" title="Refresh (F5)">⟳</button>
         <button id="switch-repo-btn" class="btn" title="Open another repository">📂</button>
       </header>
@@ -408,6 +409,31 @@
         <div class="dialog-actions">
           <button id="confirm-cancel" class="btn">Cancel</button>
           <button id="confirm-ok" class="btn primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Appearance settings (theme preset, light/dark mode, font size) -->
+    <div id="settings-dialog" class="dialog hidden">
+      <div class="dialog-card settings-card">
+        <div class="dialog-title">Appearance</div>
+        <div class="dropdown-head">Theme</div>
+        <div id="theme-grid" class="theme-grid"></div>
+        <div class="dropdown-head">Mode</div>
+        <div class="dialog-checks settings-modes">
+          <button type="button" class="btn small" data-mode-toggle="dark" title="Dark mode of the selected theme">Dark</button>
+          <button type="button" class="btn small" data-mode-toggle="light" title="Light mode of the selected theme">Light</button>
+        </div>
+        <div class="dropdown-head">Font size</div>
+        <div class="settings-font-row">
+          <button id="font-dec" class="btn small" title="Smaller font">A −</button>
+          <span id="font-size-value" class="muted"></span>
+          <button id="font-inc" class="btn small" title="Larger font">A +</button>
+        </div>
+        <p class="settings-hint">Changes apply immediately and are remembered between runs.</p>
+        <div class="dialog-actions">
+          <button id="settings-reset" class="btn" title="Restore the default appearance">Reset</button>
+          <button id="settings-close" class="btn primary">Close</button>
         </div>
       </div>
     </div>
