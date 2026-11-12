@@ -541,10 +541,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .log-filter { max-width: 240px; }
 .log-filter.small-input { max-width: 140px; }
 
-/* ---------- merge banner ---------- */
+/* ---------- merge / rebase / bisect banners ---------- */
 .merge-abort {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 4px 8px;
   padding: 6px 10px;
@@ -555,6 +556,29 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 12px;
 }
 .merge-abort-text { flex: 1; }
+
+/* ---------- bisect / worktrees dialogs ---------- */
+.bisect-log {
+  margin-top: 8px;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg, #14161a);
+  font-family: var(--mono, monospace);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bisect-marks-row { gap: 8px; }
+.file-path.worktree-path-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
 
 /* ---------- modal dialogs ---------- */
 .dialog {
@@ -740,6 +764,21 @@ body.resizing { cursor: col-resize; user-select: none; }
   min-height: 24px;
 }
 .status-bar.error { color: var(--deleted); }
+.status-copy {
+  border: none;
+  background: transparent;
+  color: var(--muted, #8a8f98);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex: none;
+}
+.status-copy:hover { background: var(--panel-alt, #2a2d33); color: var(--text, #e6e6e6); }
+
+/* ---------- op log dialog tabs ---------- */
+.dialog-tabs { display: flex; gap: 4px; margin: 4px 0 2px; }
+.oplog-error { color: var(--deleted); }
 
 /* ---------- empty state ---------- */
 .empty-state {

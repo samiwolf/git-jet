@@ -132,10 +132,20 @@ function show(node) { node.classList.remove("hidden"); }
 function hide(node) { node.classList.add("hidden"); }
 
 let statusTimer = null;
+/* Every status-bar message is also kept here (newest last) so the Op Log
+   dialog's "Status messages" tab can show the history, including errors. */
+const messageLog = [];
+let lastStatusMessage = "";
 function setStatus(text, isError) {
   const bar = $("status-bar") || $("status-text").parentElement;
   const node = $("status-text");
   node.textContent = text;
+  lastStatusMessage = text;
+  messageLog.push({ time: new Date(), text, error: Boolean(isError) });
+  if (messageLog.length > 1000) messageLog.shift();
+  if (!$("oplog-dialog").classList.contains("hidden") && oplogTab === "messages") {
+    renderMessageLog();
+  }
   if (isError) {
     bar.classList.add("error");
     clearTimeout(statusTimer);
@@ -665,8 +675,12 @@ function repoMenuItems() {
       runAction("Stash push", () => invoke("stash_push", { message: $("stash-message").value.trim() })) },
     { sep: true },
     { label: "Fetch ⮁", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
+    { label: "Fetch and prune", hint: "drops gone remote branches", run: () =>
+      runAction("Fetch and prune", () => invoke("fetch", { all: true, prune: true })) },
     { label: "Incoming commits…", hint: `↓ ${behind}`, run: openIncomingDialog },
     { label: "Manage remotes…", run: openRemotesDialog },
+    { label: "Worktrees…", hint: "linked working trees", run: openWorktreesDialog },
+    { label: "Bisect…", hint: "find the breaking commit", run: openBisectDialog },
     { label: "Reset changes (hard)", danger: true, run: async () =>
       { if (await confirmDialog("Hard reset",
           "Reset the current branch to HEAD?\n\nAll uncommitted staged and worktree changes will be deleted.",
@@ -688,22 +702,123 @@ function rows() {
   const list = $("changes-list");
   list.replaceChildren();
 
-  // While a merge is being resolved, offer an escape hatch next to the list.
+  // While an operation is being resolved, offer an escape hatch next to the
+  // list. Continue stays disabled until every conflict is resolved and
+  // staged — git refuses `--continue` otherwise ("you must edit all merge
+  // conflicts").
+  const unresolved = status.conflicts.length;
+  const operationBanners = [];
   if (status.mergeInProgress) {
-    const abort = el("div", "merge-abort");
-    abort.append(
-      el("span", "merge-abort-text", "Merging — resolve conflicts, stage and commit."),
+    operationBanners.push({
+      text: "Merging — resolve conflicts, stage and commit.",
+      buttons: [{ label: "Abort merge", action: "merge_abort", confirm: {
+        title: "Abort the merge?", message: "The pre-merge state will be restored.",
+        ok: "Abort", label: "Abort merge",
+      } }],
+    });
+  }
+  if (status.rebaseInProgress) {
+    operationBanners.push({
+      text: unresolved > 0
+        ? `Rebasing — resolve ${unresolved} conflict${unresolved === 1 ? "" : "s"}, stage them, then Continue.`
+        : "Rebasing — all conflicts staged; press Continue to resume.",
+      continueable: true,
+      buttons: [
+        {
+          label: "Skip commit", action: "rebase_skip", label2: "Skip rebase commit",
+          confirm: {
+            title: "Skip the stopped commit?",
+            message: "The commit the rebase stopped on is dropped from the replayed history.",
+            ok: "Skip", label: "Skip rebase commit",
+          },
+        },
+        {
+          label: "Abort", action: "rebase_abort", label2: "Abort rebase",
+          confirm: {
+            title: "Abort the rebase?", message: "The pre-rebase state will be restored.",
+            ok: "Abort", label: "Abort rebase",
+          },
+        },
+      ],
+    });
+  }
+  if (status.cherryPickInProgress) {
+    operationBanners.push({
+      text: unresolved > 0
+        ? `Cherry-picking — resolve ${unresolved} conflict${unresolved === 1 ? "" : "s"}, stage them, then Continue.`
+        : "Cherry-picking — press Continue to create the commit.",
+      continueable: true,
+      buttons: [{
+        label: "Abort", action: "cherry_pick_abort", label2: "Abort cherry-pick",
+        confirm: {
+          title: "Abort the cherry-pick?", message: "The pre-cherry-pick state will be restored.",
+          ok: "Abort", label: "Abort cherry-pick",
+        },
+      }],
+    });
+  }
+  if (status.revertInProgress) {
+    operationBanners.push({
+      text: unresolved > 0
+        ? `Reverting — resolve ${unresolved} conflict${unresolved === 1 ? "" : "s"}, stage them, then Continue.`
+        : "Reverting — press Continue to create the commit.",
+      continueable: true,
+      buttons: [{
+        label: "Abort", action: "revert_abort", label2: "Abort revert",
+        confirm: {
+          title: "Abort the revert?", message: "The pre-revert state will be restored.",
+          ok: "Abort", label: "Abort revert",
+        },
+      }],
+    });
+  }
+  for (const banner of operationBanners) {
+    const box = el("div", "merge-abort");
+    box.append(el("span", "merge-abort-text", banner.text));
+    if (banner.continueable) {
+      const cont = el("button", "btn small primary", "Continue");
+      const command = status.rebaseInProgress ? "rebase_continue"
+        : status.cherryPickInProgress ? "cherry_pick_continue" : "revert_continue";
+      const label = status.rebaseInProgress ? "Continue rebase"
+        : status.cherryPickInProgress ? "Continue cherry-pick" : "Continue revert";
+      cont.disabled = unresolved > 0;
+      if (unresolved > 0) {
+        cont.title = `Resolve and stage all ${unresolved} conflict(s) first — git refuses to continue otherwise.`;
+      }
+      cont.addEventListener("click", () =>
+        void continueOperation(label, command, cont));
+      box.append(cont);
+    }
+    for (const spec of banner.buttons) {
+      const btn = el("button", "btn small", spec.label);
+      btn.addEventListener("click", async () => {
+        if (spec.confirm && !(await confirmDialog(spec.confirm.title, spec.confirm.message,
+            { okLabel: spec.confirm.ok }))) return;
+        void runAction(spec.confirm ? spec.confirm.label : spec.label2,
+          () => invoke(spec.action), true, btn);
+      });
+      box.append(btn);
+    }
+    list.append(box);
+  }
+
+  // While bisecting, offer the escape hatch next to the list; good/bad marks
+  // live in the Log context menu and the Bisect dialog.
+  if (status.bisectInProgress) {
+    const banner = el("div", "merge-abort");
+    banner.append(
+      el("span", "merge-abort-text", "Bisecting — mark commits good or bad from the Log."),
       (() => {
-        const btn = el("button", "btn small", "Abort merge");
-        btn.addEventListener("click", async () => {
-          if (!(await confirmDialog("Abort the merge?", "The pre-merge state will be restored.",
-            { okLabel: "Abort" }))) return;
-          void runAction("Abort merge", () => invoke("merge_abort"), true, btn);
+        const end = el("button", "btn small", "End bisect");
+        end.addEventListener("click", async () => {
+          if (!(await confirmDialog("End the bisect session?",
+              "The original HEAD is restored.", { okLabel: "End bisect" }))) return;
+          void runAction("End bisect", () => invoke("bisect_reset"), true, end);
         });
-        return btn;
+        return end;
       })()
     );
-    list.append(abort);
+    list.append(banner);
   }
 
   const sections = [];
@@ -1216,6 +1331,7 @@ function renderLog(commits, from = 0) {
       const isMerge = (commit.parents || []).length > 1;
       const last = state.loadedStatus && state.loadedStatus.lastCommit;
       const isHead = Boolean(last && last.hash === commit.hash);
+      const bisecting = Boolean(state.loadedStatus && state.loadedStatus.bisectInProgress);
       openContextMenu(event, [
         { head: commit.subject },
         { label: "Show diff", hint: commit.shortHash, run: () => selectCommit(commit, node) },
@@ -1225,6 +1341,18 @@ function renderLog(commits, from = 0) {
           run: () => checkoutCommit(commit.hash, commit.subject),
         },
         { sep: true },
+        ...(bisecting ? [
+          { label: "Mark good (bisect)", run: () =>
+            void runAction(`Mark ${commit.shortHash} good`, () =>
+              invoke("bisect_mark", { kind: "good", sha: commit.hash })) },
+          { label: "Mark bad (bisect)", run: () =>
+            void runAction(`Mark ${commit.shortHash} bad`, () =>
+              invoke("bisect_mark", { kind: "bad", sha: commit.hash })) },
+          { label: "Skip this commit (bisect)", run: () =>
+            void runAction(`Skip ${commit.shortHash}`, () =>
+              invoke("bisect_mark", { kind: "skip", sha: commit.hash })) },
+          { sep: true },
+        ] : []),
         ...(isMerge ? [] : [
           { label: "Cherry-pick commit", run: () =>
             runHistoryAction("Cherry-pick", () => invoke("cherry_pick", { sha: commit.hash })) },
@@ -1437,6 +1565,10 @@ function promptDialog(title, placeholder, initial, mode, onSubmit) {
   input.select();
 }
 
+/* Continues a stopped operation (rebase / cherry-pick / revert). Hitting
+   the next conflicting commit is not a failure — a multi-commit rebase
+   stops once per conflict — so it is reported as progress and the views
+   refresh, bringing the banner back with the new conflict list. */
 function closeDialogs() {
   // A pending confirmation counts as cancelled (same as the native confirm).
   resolveConfirm(false);
@@ -1448,7 +1580,7 @@ function closeDialogs() {
   for (const id of [
     "pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog",
     "incoming-dialog", "remotes-dialog", "message-dialog", "clone-dialog",
-    "oplog-dialog", "confirm-dialog",
+    "oplog-dialog", "confirm-dialog", "bisect-dialog", "worktrees-dialog",
   ]) {
     hide($(id));
   }
@@ -1840,6 +1972,64 @@ async function doMergeIntoCurrent(name, noFF) {
   await Promise.all([refreshStatus(), refreshBranches()]);
 }
 
+/* Name of the checked-out branch, null while detached or before the first
+   status load. */
+function currentBranchName() {
+  const status = state.loadedStatus;
+  if (!status || !status.branch || status.branch.detached) return null;
+  return status.branch.name || null;
+}
+
+/* WebStorm-style "Rebase '<current>' onto '<selected>'": replays the
+   current branch's unique commits on top of the selected branch, without
+   checking anything out (git rebase <selected>). The current branch's
+   history is rewritten; if it tracks a remote it diverges and a later
+   push needs --force-with-lease. */
+async function doRebaseCurrentOnto(branch) {
+  const current = currentBranchName();
+  if (!current || branch.current) {
+    setStatus("Rebase needs a checked-out branch to rewrite.", true);
+    return;
+  }
+  const upstream = state.loadedStatus && state.loadedStatus.branch
+    ? state.loadedStatus.branch.upstream
+    : null;
+  const tracked = upstream
+    ? `It tracks ${upstream}, so afterwards it will diverge from the remote and pushing needs Force push (--force-with-lease).`
+    : "";
+  if (!(await confirmDialog(`Rebase '${current}' onto '${branch.name}'?`,
+      `The commits of ${current} that are not in ${branch.name} are replayed on top of ${branch.name}, rewriting ${current}'s history. ${tracked}\n\n` +
+      "Requires a clean working tree; conflicts stop the rebase — resolve, stage, then Continue under Local Changes.",
+      { okLabel: "Rebase" }))) return;
+  await runHistoryAction(`Rebase '${current}' onto '${branch.name}'`, () =>
+    invoke("rebase_onto", { target: branch.name }));
+  await Promise.all([refreshLog(false), refreshBranches()]);
+}
+
+/* WebStorm-style "Checkout and Rebase onto Current": check the selected
+   branch out and replay it on top of the previously current branch. */
+async function doCheckoutAndRebaseOntoCurrent(branch) {
+  const current = currentBranchName();
+  if (!current || branch.current) {
+    setStatus("Rebase needs a checked-out branch to rebase onto.", true);
+    return;
+  }
+  if (!(await confirmDialog(`Check out ${branch.name} and rebase onto ${current}?`,
+      `${branch.name} is checked out and its commits are replayed on top of ${current}, rewriting ${branch.name}'s history.\n\n` +
+      "Requires a clean working tree; conflicts stop the rebase — resolve, stage, then Continue under Local Changes.",
+      { okLabel: "Checkout and Rebase" }))) return;
+  try {
+    setStatus(`Checking out ${branch.name}…`);
+    await invoke("switch_branch", { branch: branch.name });
+  } catch (error) {
+    setStatus(`Checkout failed: ${errorText(error)}`, true);
+    return;
+  }
+  await runHistoryAction(`Rebase ${branch.name} onto ${current}`, () =>
+    invoke("rebase_onto", { target: current }));
+  await Promise.all([refreshLog(false), refreshBranches()]);
+}
+
 async function deleteBranch(branch, force) {
   if (branch.remote) {
     if (!(await confirmDialog(`Delete remote branch ${branch.name}?`,
@@ -2143,6 +2333,7 @@ async function submitAddRemote() {
 async function submitPullDialog() {
   const strategy = document.querySelector('input[name="pull-strategy"]:checked');
   const ffOnly = strategy ? strategy.value === "ff" : false;
+  const rebase = strategy ? strategy.value === "rebase" : false;
   $("pull-error").textContent = "";
   try {
     setStatus("Pulling…");
@@ -2150,6 +2341,7 @@ async function submitPullDialog() {
       remote: $("pull-remote").value.trim() || null,
       branch: $("pull-branch").value.trim() || null,
       ffOnly,
+      rebase,
     });
     hide($("pull-dialog"));
     /* The raw git output stays in the Op Log; the status bar stays quiet. */
@@ -2158,6 +2350,165 @@ async function submitPullDialog() {
   } catch (error) {
     $("pull-error").textContent = errorText(error);
   }
+}
+
+/* --------------------------------------------------------------- bisect dialog */
+
+/* Starts, drives and ends a git bisect session. Good/bad/skip marks apply to
+   HEAD by default; the Log context menu can mark any commit explicitly. */
+async function openBisectDialog() {
+  const dialog = $("bisect-dialog");
+  $("bisect-error").textContent = "";
+  $("bisect-bad").value = "HEAD";
+  $("bisect-good").value = "";
+  $("bisect-log").textContent = "";
+  show(dialog);
+  await refreshBisectDialog();
+}
+
+async function refreshBisectDialog() {
+  const status = state.loadedStatus;
+  const bisecting = Boolean(status && status.bisectInProgress);
+  const section = $("bisect-active");
+  const start = $("bisect-start-row");
+  const marks = $("bisect-marks");
+  section.classList.toggle("hidden", !bisecting);
+  start.classList.toggle("hidden", bisecting);
+  marks.classList.toggle("hidden", !bisecting);
+  if (!bisecting) {
+    $("bisect-log").textContent = "No bisect session running.";
+    return;
+  }
+  try {
+    $("bisect-log").textContent = await invoke("bisect_log");
+  } catch (error) {
+    $("bisect-error").textContent = errorText(error);
+  }
+}
+
+async function startBisect() {
+  $("bisect-error").textContent = "";
+  try {
+    await invoke("bisect_start", {
+      bad: $("bisect-bad").value.trim() || null,
+      good: $("bisect-good").value.trim() || null,
+    });
+    setStatus("Bisect started — mark commits good or bad (Log context menu).");
+    await refreshStatus();
+    await refreshBisectDialog();
+  } catch (error) {
+    $("bisect-error").textContent = errorText(error);
+  }
+}
+
+async function bisectMark(kind) {
+  $("bisect-error").textContent = "";
+  try {
+    const output = await invoke("bisect_mark", { kind, sha: null });
+    await refreshStatus();
+    const stillBisecting = Boolean(state.loadedStatus && state.loadedStatus.bisectInProgress);
+    if (stillBisecting) {
+      setStatus(truncate(String(output || `Marked ${kind}`), 3));
+    } else {
+      // The session ended: git printed the first bad commit and reset itself.
+      setStatus(`Bisect complete: ${truncate(String(output || ""), 4)}`);
+    }
+    await refreshBisectDialog();
+    await refreshLog(false);
+  } catch (error) {
+    $("bisect-error").textContent = errorText(error);
+  }
+}
+
+async function endBisect() {
+  if (!(await confirmDialog("End the bisect session?",
+      "The original HEAD is restored.", { okLabel: "End bisect" }))) return;
+  await runAction("End bisect", () => invoke("bisect_reset"));
+  await refreshStatus();
+  await refreshBisectDialog();
+}
+
+/* ------------------------------------------------------------ worktrees dialog */
+
+async function openWorktreesDialog() {
+  const dialog = $("worktrees-dialog");
+  $("worktrees-error").textContent = "";
+  $("worktree-path").value = "";
+  $("worktree-branch").value = "";
+  $("worktree-start-ref").value = "";
+  show(dialog);
+  await refreshWorktrees();
+}
+
+async function refreshWorktrees() {
+  const list = $("worktrees-list");
+  list.replaceChildren(el("div", "empty-hint", "Loading worktrees…"));
+  try {
+    const worktrees = await invoke("get_worktrees");
+    list.replaceChildren();
+    for (const worktree of worktrees) {
+      const row = el("div", "file-row");
+      const label = worktree.bare
+        ? `${worktree.path} (bare)`
+        : worktree.branch
+          ? `${worktree.path} → ${worktree.branch}`
+          : `${worktree.path} (detached)`;
+      row.append(
+        el("span", "file-kind", worktree.bare ? "◆" : worktree.branch ? "●" : "○"),
+        el("span", "file-path worktree-path-label", label),
+        el("span", "commit-meta", worktree.head)
+      );
+      row.title = worktree.path;
+      if (!worktree.bare) {
+        const remove = el("span", "file-action", "remove");
+        remove.title = "Remove this worktree";
+        remove.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          if (!(await confirmDialog(`Remove worktree at ${worktree.path}?`,
+              "Uncommitted changes in that worktree are lost.",
+              { danger: true, okLabel: "Remove" }))) return;
+          await runAction(`Remove worktree ${worktree.path}`, () =>
+            invoke("remove_worktree", { path: worktree.path }), true, remove);
+          await refreshWorktrees();
+        });
+        row.append(remove);
+      }
+      list.append(row);
+    }
+    if (worktrees.length === 0) list.append(el("div", "empty-hint", "No worktrees"));
+  } catch (error) {
+    list.replaceChildren();
+    $("worktrees-error").textContent = errorText(error);
+  }
+}
+
+async function addWorktree() {
+  $("worktrees-error").textContent = "";
+  const path = $("worktree-path").value.trim();
+  if (!path) {
+    $("worktrees-error").textContent = "Enter a folder path for the new worktree.";
+    return;
+  }
+  try {
+    await invoke("add_worktree", {
+      path,
+      newBranch: $("worktree-branch").value.trim() || null,
+      startRef: $("worktree-start-ref").value.trim() || null,
+    });
+    $("worktree-path").value = "";
+    $("worktree-branch").value = "";
+    $("worktree-start-ref").value = "";
+    setStatus(`Worktree added at ${path}`);
+    await refreshWorktrees();
+    await refreshBranches();
+  } catch (error) {
+    $("worktrees-error").textContent = errorText(error);
+  }
+}
+
+async function pruneWorktrees() {
+  await runAction("Prune worktrees", () => invoke("prune_worktrees"));
+  await refreshWorktrees();
 }
 
 /* --------------------------------------------------------------- tags menu */
@@ -2251,6 +2602,7 @@ function renderBranchList(container, branches) {
       await switchToBranch(branch);
     });
     row.addEventListener("contextmenu", (event) => {
+      const current = currentBranchName();
       const items = [{ head: branch.name }];
       if (!branch.current && !branch.remote) {
         items.push({ label: `Switch to ${branch.name}`, hint: branch.hash, run: async () => {
@@ -2261,6 +2613,21 @@ function renderBranchList(container, branches) {
           hide($("branch-menu"));
           void doMergeIntoCurrent(branch.name, false);
         } });
+        /* WebStorm wording: the item names the branch that gets REWRITTEN
+           first. Rebase '<current>' onto '<selected>' replays the current
+           branch's unique commits on top of the selected branch. */
+        if (current) {
+          items.push({ label: `Rebase '${current}' onto '${branch.name}'`,
+            hint: "rewrites current branch", run: () => {
+            hide($("branch-menu"));
+            void doRebaseCurrentOnto(branch);
+          } });
+          items.push({ label: "Checkout and Rebase onto Current",
+            hint: `rewrites ${branch.name}`, run: () => {
+            hide($("branch-menu"));
+            void doCheckoutAndRebaseOntoCurrent(branch);
+          } });
+        }
         items.push({ label: "Checkout as New Branch from here…", run: () => {
           hide($("branch-menu"));
           void newBranchFrom(branch);
@@ -2275,6 +2642,13 @@ function renderBranchList(container, branches) {
           hide($("branch-menu"));
           void doMergeIntoCurrent(branch.name, false);
         } });
+        if (current) {
+          items.push({ label: `Rebase '${current}' onto '${branch.name}'`,
+            hint: "rewrites current branch", run: () => {
+            hide($("branch-menu"));
+            void doRebaseCurrentOnto(branch);
+          } });
+        }
       }
       items.push({ label: "Compare with Current", run: () => {
         hide($("branch-menu"));
@@ -2335,36 +2709,76 @@ function renderBranchList(container, branches) {
 
 /* ------------------------------------------------------------- op log */
 
-/* Viewer for the last 1000 git commands Git Jet ran (this session only). */
+/* Which tab the Op Log dialog shows: git commands or status messages. */
+let oplogTab = "commands";
+
+/* Viewer for the last 1000 git commands Git Jet ran (this session only),
+   plus a second tab with every status-bar message, errors included. */
 async function openOpLog() {
   try {
-    renderOpLog(await invoke("git_op_log"));
+    await renderOpLog();
     show($("oplog-dialog"));
   } catch (error) {
     setStatus(`Op log failed: ${errorText(error)}`, true);
   }
 }
 
-function renderOpLog(lines) {
-  $("oplog-count").textContent = lines.length ? `${lines.length} line(s)` : "";
-  const list = $("oplog-list");
+async function renderOpLog() {
+  const lines = oplogTab === "commands" ? await invoke("git_op_log") : null;
+  $("oplog-list").classList.toggle("hidden", oplogTab !== "commands");
+  $("oplog-messages").classList.toggle("hidden", oplogTab !== "messages");
+  for (const button of document.querySelectorAll("[data-oplog-tab]")) {
+    button.classList.toggle("active", button.dataset.oplogTab === oplogTab);
+  }
+  $("oplog-hint").textContent = oplogTab === "commands"
+    ? "Newest first — every git command Git Jet ran this session, with its outcome and duration. Kept in memory only (last 1000)."
+    : "Newest first — every status-bar message this session, errors highlighted. Kept in memory only (last 1000).";
+  if (oplogTab === "commands") {
+    $("oplog-count").textContent = lines.length ? `${lines.length} line(s)` : "";
+    const list = $("oplog-list");
+    list.replaceChildren();
+    if (lines.length === 0) {
+      list.append(el("div", "empty-hint", "No git operations yet — everything Git Jet runs shows up here."));
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    for (let index = lines.length - 1; index >= 0; index--) {
+      fragment.append(el("div", "oplog-line", lines[index]));
+    }
+    list.append(fragment);
+  } else {
+    renderMessageLog();
+  }
+}
+
+function renderMessageLog() {
+  $("oplog-count").textContent = messageLog.length ? `${messageLog.length} message(s)` : "";
+  const list = $("oplog-messages");
   list.replaceChildren();
-  if (lines.length === 0) {
-    list.append(el("div", "empty-hint", "No git operations yet — everything Git Jet runs shows up here."));
+  if (messageLog.length === 0) {
+    list.append(el("div", "empty-hint", "No messages yet — the status bar history shows up here."));
     return;
   }
   const fragment = document.createDocumentFragment();
-  for (let index = lines.length - 1; index >= 0; index--) {
-    fragment.append(el("div", "oplog-line", lines[index]));
+  for (let index = messageLog.length - 1; index >= 0; index--) {
+    const entry = messageLog[index];
+    const time = entry.time.toLocaleTimeString([], { hour12: false });
+    fragment.append(el("div", `oplog-line${entry.error ? " oplog-error" : ""}`,
+      `${time}  ${entry.text}`));
   }
   list.append(fragment);
 }
 
 async function clearOpLog() {
   try {
-    await invoke("clear_git_op_log");
-    renderOpLog([]);
-    setStatus("Operation log cleared");
+    if (oplogTab === "commands") {
+      await invoke("clear_git_op_log");
+    } else {
+      messageLog.length = 0;
+      renderMessageLog();
+    }
+    await renderOpLog();
+    setStatus("Log cleared");
   } catch (error) {
     setStatus(`Clear failed: ${errorText(error)}`, true);
   }
@@ -2496,11 +2910,50 @@ function boot() {
   $("remotes-close").addEventListener("click", () => hide($("remotes-dialog")));
   $("oplog-btn").addEventListener("click", () => void openOpLog());
   $("oplog-close").addEventListener("click", () => hide($("oplog-dialog")));
-  $("oplog-clear").addEventListener("click", () => void clearOpLog());
+  $("oplog-clear").addEventListener("click", () => void guardButton($("oplog-clear"), clearOpLog));
+  for (const button of document.querySelectorAll("[data-oplog-tab]")) {
+    button.addEventListener("click", () => {
+      oplogTab = button.dataset.oplogTab;
+      void renderOpLog().catch((error) => setStatus(`Op log failed: ${errorText(error)}`, true));
+    });
+  }
+
+  /* status bar: copy the current message (useful for long git errors) */
+  $("status-copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(lastStatusMessage);
+      setStatus(lastStatusMessage ? "Status message copied" : "Nothing to copy");
+    } catch (error) {
+      setStatus(`Copy failed: ${errorText(error)}`, true);
+    }
+  });
   $("remote-add").addEventListener("click", () => void guardButton($("remote-add"), submitAddRemote));
   for (const id of ["remote-name", "remote-url"]) {
     $(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") $("remote-add").click();
+    });
+  }
+
+  /* bisect */
+  $("bisect-start-btn").addEventListener("click", () => void guardButton($("bisect-start-btn"), startBisect));
+  $("bisect-good-btn").addEventListener("click", () => void guardButton($("bisect-good-btn"), () => bisectMark("good")));
+  $("bisect-bad-btn").addEventListener("click", () => void guardButton($("bisect-bad-btn"), () => bisectMark("bad")));
+  $("bisect-skip-btn").addEventListener("click", () => void guardButton($("bisect-skip-btn"), () => bisectMark("skip")));
+  $("bisect-reset-btn").addEventListener("click", () => void guardButton($("bisect-reset-btn"), endBisect));
+  $("bisect-close").addEventListener("click", () => hide($("bisect-dialog")));
+  for (const id of ["bisect-bad", "bisect-good"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("bisect-start-btn").click();
+    });
+  }
+
+  /* worktrees */
+  $("worktree-add-btn").addEventListener("click", () => void guardButton($("worktree-add-btn"), addWorktree));
+  $("worktree-prune-btn").addEventListener("click", () => void guardButton($("worktree-prune-btn"), pruneWorktrees));
+  $("worktrees-close").addEventListener("click", () => hide($("worktrees-dialog")));
+  for (const id of ["worktree-path", "worktree-branch", "worktree-start-ref"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("worktree-add-btn").click();
     });
   }
 

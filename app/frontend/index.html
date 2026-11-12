@@ -137,6 +137,7 @@
 
       <footer id="status-bar" class="status-bar">
         <span id="status-text">Ready</span>
+        <button id="status-copy" class="status-copy" title="Copy the status message">⧉</button>
         <span class="spacer"></span>
         <span id="status-repo" class="muted"></span>
       </footer>
@@ -165,6 +166,7 @@
         <div class="dialog-checks">
           <label><input type="radio" name="pull-strategy" value="merge" checked /> Merge</label>
           <label><input type="radio" name="pull-strategy" value="ff" /> Fast-forward only</label>
+          <label><input type="radio" name="pull-strategy" value="rebase" /> Rebase</label>
         </div>
         <p id="pull-error" class="dialog-error"></p>
         <div class="dialog-actions">
@@ -227,12 +229,17 @@
       </div>
     </div>
 
-    <!-- Git operation log dialog (last 1000 git commands, clearable) -->
+    <!-- Git operation log dialog (tabs: git commands + status messages) -->
     <div id="oplog-dialog" class="dialog hidden">
       <div class="dialog-card oplog-card">
         <div class="dialog-title">Git operation log <span id="oplog-count" class="muted"></span></div>
-        <p class="compare-hint">Newest first — every git command Git Jet ran this session, with its outcome and duration. Kept in memory only (last 1000).</p>
+        <div class="dialog-tabs">
+          <button class="tab flat active" data-oplog-tab="commands">Git commands</button>
+          <button class="tab flat" data-oplog-tab="messages">Status messages</button>
+        </div>
+        <p id="oplog-hint" class="compare-hint">Newest first — every git command Git Jet ran this session, with its outcome and duration. Kept in memory only (last 1000).</p>
         <div id="oplog-list" class="oplog-list"></div>
+        <div id="oplog-messages" class="oplog-list hidden"></div>
         <div class="dialog-actions">
           <button id="oplog-clear" class="btn">Clear log</button>
           <button id="oplog-close" class="btn primary">Close</button>
@@ -336,6 +343,56 @@
         <div class="dialog-actions">
           <button id="merge-cancel" class="btn">Cancel</button>
           <button id="merge-apply" class="btn primary">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bisect dialog (start, mark HEAD good/bad/skip, see the transcript) -->
+    <div id="bisect-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Bisect</div>
+        <p class="compare-hint">Binary-search history for the commit that introduced a bug: mark the current
+          state good or bad and git checks out the next candidate. Any commit can also be marked from the Log context menu.</p>
+        <div id="bisect-start-row" class="dialog-row">
+          <input id="bisect-bad" class="text-input" placeholder="Bad revision (default HEAD)" />
+          <input id="bisect-good" class="text-input" placeholder="Known-good revision, e.g. v1.0" />
+          <button id="bisect-start-btn" class="btn small primary">Start</button>
+        </div>
+        <div id="bisect-marks" class="hidden">
+          <div class="dialog-checks bisect-marks-row">
+            <button id="bisect-good-btn" class="btn small">Mark HEAD good</button>
+            <button id="bisect-bad-btn" class="btn small">Mark HEAD bad</button>
+            <button id="bisect-skip-btn" class="btn small">Skip</button>
+            <button id="bisect-reset-btn" class="btn small">End bisect</button>
+          </div>
+          <div id="bisect-log" class="bisect-log"></div>
+        </div>
+        <p id="bisect-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="bisect-close" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Worktrees dialog (list / add / remove / prune linked working trees) -->
+    <div id="worktrees-dialog" class="dialog hidden">
+      <div class="dialog-card">
+        <div class="dialog-title">Worktrees</div>
+        <p class="compare-hint">Linked working trees check out several branches at once — each in its own folder, sharing the repository.</p>
+        <div id="worktrees-list" class="dialog-commits"></div>
+        <div class="dropdown-head">Add worktree</div>
+        <div class="dialog-row">
+          <input id="worktree-path" class="text-input" placeholder="Folder path, e.g. ../repo-topic" />
+          <input id="worktree-branch" class="text-input" placeholder="New branch (optional)" />
+        </div>
+        <div class="dialog-row">
+          <input id="worktree-start-ref" class="text-input" placeholder="Start from ref (optional, e.g. origin/main)" />
+          <button id="worktree-add-btn" class="btn small">Add</button>
+        </div>
+        <p id="worktrees-error" class="dialog-error"></p>
+        <div class="dialog-actions">
+          <button id="worktree-prune-btn" class="btn" title="Clean up administrative files of deleted worktree folders">Prune</button>
+          <button id="worktrees-close" class="btn">Close</button>
         </div>
       </div>
     </div>

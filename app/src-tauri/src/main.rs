@@ -12,7 +12,7 @@ use git_jet::core::oplog;
 use git_jet::core::{
     clone_repository as engine_clone_repository, Branch, ChangedFile, CommitDetail, CommitNode,
     DiffMode, EntryKind, GitClient, Head, LogFilter, RemoteEntry, RollbackLevel, StashEntry,
-    StatusEntry, StatusReport, TagEntry,
+    StatusEntry, StatusReport, TagEntry, WorktreeEntry,
 };
 use git_jet::{Engine, StdExecutor};
 use serde::Serialize;
@@ -110,6 +110,8 @@ struct StatusDto {
     merge_in_progress: bool,
     cherry_pick_in_progress: bool,
     revert_in_progress: bool,
+    rebase_in_progress: bool,
+    bisect_in_progress: bool,
 }
 
 #[derive(Serialize)]
@@ -267,6 +269,8 @@ fn map_status(report: &StatusReport) -> StatusDto {
         merge_in_progress: report.merge_in_progress,
         cherry_pick_in_progress: report.cherry_pick_in_progress,
         revert_in_progress: report.revert_in_progress,
+        rebase_in_progress: report.rebase_in_progress,
+        bisect_in_progress: report.bisect_in_progress,
     }
 }
 
@@ -556,9 +560,14 @@ async fn stash_apply(
 }
 
 #[tauri::command]
-async fn fetch(all: Option<bool>, state: State<'_, AppState>) -> Result<String, String> {
+async fn fetch(
+    all: Option<bool>,
+    prune: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let all = all.unwrap_or(false);
-    with_engine(&state, move |client| client.fetch(all)).await
+    let prune = prune.unwrap_or(false);
+    with_engine(&state, move |client| client.fetch_with_prune(all, prune)).await
 }
 
 #[tauri::command]
@@ -584,6 +593,7 @@ async fn pull_options(
     remote: Option<String>,
     branch: Option<String>,
     ff_only: Option<bool>,
+    rebase: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     with_engine(&state, move |client| {
@@ -591,6 +601,7 @@ async fn pull_options(
             remote.as_deref(),
             branch.as_deref(),
             ff_only.unwrap_or(false),
+            rebase.unwrap_or(false),
         )
     })
     .await
@@ -777,6 +788,156 @@ async fn merge_branch(
 #[tauri::command]
 async fn merge_abort(state: State<'_, AppState>) -> Result<String, String> {
     with_engine(&state, move |client| client.merge_abort()).await
+}
+
+/* ------------------------------------------------------------------ rebase */
+
+#[tauri::command]
+async fn rebase_onto(target: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+    let target = target.ok_or_else(|| "A rebase target branch or commit is required.".to_string())?;
+    with_engine(&state, move |client| client.rebase_onto(&target)).await
+}
+
+/// Rebase `branch` onto `onto` without checking it out.
+#[tauri::command]
+async fn rebase_branch(
+    branch: Option<String>,
+    onto: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let branch = branch.ok_or_else(|| "A branch name is required.".to_string())?;
+    let onto = onto.ok_or_else(|| "A rebase target is required.".to_string())?;
+    with_engine(&state, move |client| client.rebase_branch(&branch, &onto)).await
+}
+
+#[tauri::command]
+async fn rebase_abort(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.rebase_abort()).await
+}
+
+#[tauri::command]
+async fn rebase_continue(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.rebase_continue()).await
+}
+
+#[tauri::command]
+async fn rebase_skip(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.rebase_skip()).await
+}
+
+/* --------------------------------------------- cherry-pick / revert escape hatches */
+
+#[tauri::command]
+async fn cherry_pick_abort(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.cherry_pick_abort()).await
+}
+
+#[tauri::command]
+async fn cherry_pick_continue(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.cherry_pick_continue()).await
+}
+
+#[tauri::command]
+async fn revert_abort(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.revert_abort()).await
+}
+
+#[tauri::command]
+async fn revert_continue(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.revert_continue()).await
+}
+
+/* ------------------------------------------------------------------ bisect */
+
+#[tauri::command]
+async fn bisect_start(
+    bad: Option<String>,
+    good: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    with_engine(&state, move |client| {
+        client.bisect_start(bad.as_deref(), good.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn bisect_mark(
+    kind: Option<String>,
+    sha: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let kind = kind.ok_or_else(|| "A bisect mark (good, bad or skip) is required.".to_string())?;
+    with_engine(&state, move |client| client.bisect_mark(&kind, sha.as_deref())).await
+}
+
+#[tauri::command]
+async fn bisect_log(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.bisect_log()).await
+}
+
+#[tauri::command]
+async fn bisect_reset(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.bisect_reset()).await
+}
+
+/* ---------------------------------------------------------------- worktrees */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeDto {
+    path: String,
+    head: String,
+    branch: Option<String>,
+    bare: bool,
+    detached: bool,
+}
+
+#[tauri::command]
+async fn get_worktrees(state: State<'_, AppState>) -> Result<Vec<WorktreeDto>, String> {
+    with_engine(&state, move |client| {
+        let worktrees: Vec<WorktreeEntry> = client.list_worktrees()?;
+        Ok(worktrees
+            .into_iter()
+            .map(|worktree| WorktreeDto {
+                path: worktree.path,
+                head: worktree.head,
+                branch: worktree.branch,
+                bare: worktree.bare,
+                detached: worktree.detached,
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn add_worktree(
+    path: Option<String>,
+    new_branch: Option<String>,
+    start_ref: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let path = path.ok_or_else(|| "A worktree path is required.".to_string())?;
+    with_engine(&state, move |client| {
+        client.add_worktree(&path, new_branch.as_deref(), start_ref.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn remove_worktree(
+    path: Option<String>,
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let path = path.ok_or_else(|| "A worktree path is required.".to_string())?;
+    with_engine(&state, move |client| client.remove_worktree(&path, force.unwrap_or(false))).await
+}
+
+#[tauri::command]
+async fn prune_worktrees(state: State<'_, AppState>) -> Result<String, String> {
+    with_engine(&state, move |client| client.prune_worktrees()).await
 }
 
 #[tauri::command]
@@ -1032,6 +1193,23 @@ fn main() {
             clone_repository,
             merge_branch,
             merge_abort,
+            rebase_onto,
+            rebase_branch,
+            rebase_abort,
+            rebase_continue,
+            rebase_skip,
+            cherry_pick_abort,
+            cherry_pick_continue,
+            revert_abort,
+            revert_continue,
+            bisect_start,
+            bisect_mark,
+            bisect_log,
+            bisect_reset,
+            get_worktrees,
+            add_worktree,
+            remove_worktree,
+            prune_worktrees,
             get_worktree_file,
             write_merge_result,
             delete_branch,

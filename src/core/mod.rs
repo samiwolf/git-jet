@@ -18,7 +18,7 @@ pub use log::parse_log_nodes;
 pub use model::{
     Branch, BranchInfo, ChangedFile, CmdOutput, Commit, CommitDetail, CommitNode, EntryKind,
     GitExecutor, Head, LogFilter, RemoteEntry, Rendered, RenderedSection, StashEntry, StatusEntry,
-    StatusReport, TagEntry,
+    StatusReport, TagEntry, WorktreeEntry,
 };
 pub use request::{
     argument_completions, parse_request, ArgumentCompletion, DiffMode, GitRequest, RollbackLevel,

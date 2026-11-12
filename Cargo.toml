@@ -1,6 +1,6 @@
 [package]
 name = "git-jet"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A JetBrains-style Git tool: standalone desktop application"
 authors = ["Git Jet contributors <samiulcsedu22@gmail.com>"]

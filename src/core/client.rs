@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::log::{parse_branches, parse_log_nodes, parse_log_records, parse_raw_entries, parse_stashes, parse_tags};
 use super::model::{
     CmdOutput, Commit, CommitDetail, CommitNode, GitExecutor, LogFilter, RemoteEntry, Rendered,
-    StashEntry, StatusReport, TagEntry,
+    StashEntry, StatusReport, TagEntry, WorktreeEntry,
 };
 use super::oplog;
 use super::render;
@@ -24,6 +24,7 @@ pub struct GitClient<E: GitExecutor> {
     executor: E,
     worktree_root: String,
     repo_root: Option<String>,
+    git_dir: Option<String>,
 }
 
 impl<E: GitExecutor> GitClient<E> {
@@ -32,6 +33,7 @@ impl<E: GitExecutor> GitClient<E> {
             executor,
             worktree_root: worktree_root.into(),
             repo_root: None,
+            git_dir: None,
         }
     }
 
@@ -117,6 +119,10 @@ impl<E: GitExecutor> GitClient<E> {
         let mut report = parse_status_v2(&output.stdout)?;
         report.stash_count = self.stash_count().unwrap_or(0);
         report.last_commit = self.last_commit().ok().flatten();
+        // Rebase/bisect banners must also show without any conflicts.
+        let (rebase_in_progress, bisect_in_progress) = self.filesystem_state();
+        report.rebase_in_progress = rebase_in_progress;
+        report.bisect_in_progress = bisect_in_progress;
         // Resolving-merge state is only relevant while files are unmerged,
         // so the extra `rev-parse` probes stay limited to that case.
         if report.conflicts().is_empty() {
@@ -132,6 +138,54 @@ impl<E: GitExecutor> GitClient<E> {
     fn head_ref_exists(&mut self, name: &str) -> bool {
         let output = self.exec(&["rev-parse", "-q", "--verify", name]);
         matches!(output, Ok(output) if output.success())
+    }
+
+    /// Resolves (and caches) the git directory. Linked worktrees get their
+    /// own git dir, which is where rebase/bisect bookkeeping lives. A pure
+    /// filesystem walk keeps `status` free of an extra git process: the
+    /// worktree's `.git` is either a directory or a `gitdir:` pointer file.
+    fn git_dir(&mut self) -> Result<String, String> {
+        if let Some(dir) = &self.git_dir {
+            return Ok(dir.clone());
+        }
+        let root = self.repo_root()?;
+        let dot_git = std::path::Path::new(&root).join(".git");
+        let dir = if dot_git.is_dir() {
+            dot_git
+        } else {
+            let pointer = std::fs::read_to_string(&dot_git)
+                .map_err(|error| format!("Could not read the `.git` pointer: {error}"))?;
+            let target = pointer
+                .strip_prefix("gitdir:")
+                .ok_or_else(|| "The `.git` pointer is malformed.".to_string())?
+                .trim()
+                .to_string();
+            if target.is_empty() {
+                return Err("The `.git` pointer is empty.".to_string());
+            }
+            let path = std::path::Path::new(&target);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::path::Path::new(&root).join(path)
+            }
+        };
+        let dir = dir.to_string_lossy().into_owned();
+        self.git_dir = Some(dir.clone());
+        Ok(dir)
+    }
+
+    /// Whether rebase/bisect bookkeeping files exist in the git dir.
+    /// Pure filesystem checks: no git process, safe to run on every status.
+    fn filesystem_state(&mut self) -> (bool, bool) {
+        let dir = match self.git_dir() {
+            Ok(dir) => dir,
+            Err(_) => return (false, false),
+        };
+        let dir = std::path::Path::new(&dir);
+        let rebase = dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists();
+        let bisect = dir.join("BISECT_LOG").exists();
+        (rebase, bisect)
     }
 
     fn stash_count(&mut self) -> Result<usize, String> {
@@ -806,19 +860,24 @@ impl<E: GitExecutor> GitClient<E> {
         self.text(&["pull"])
     }
 
-    /// Pull with dialog options: optional remote/branch and fast-forward-only.
+    /// Pull with dialog options: optional remote/branch and one of the three
+    /// strategies — merge, fast-forward-only or rebase.
     ///
-    /// Only merge and fast-forward strategies are offered — this tool window
-    /// deliberately has no rebase support.
+    /// `--rebase` replays local commits on top of the fetched upstream
+    /// instead of creating a merge commit.
     pub fn pull_with_options(
         &mut self,
         remote: Option<&str>,
         branch: Option<&str>,
         ff_only: bool,
+        rebase: bool,
     ) -> Result<String, String> {
         let mut args = vec!["pull".to_string()];
         if ff_only {
             args.push("--ff-only".to_string());
+        }
+        if rebase {
+            args.push("--rebase".to_string());
         }
         if let Some(remote) = remote.map(str::trim).filter(|value| !value.is_empty()) {
             args.push(remote.to_string());
@@ -1051,6 +1110,184 @@ impl<E: GitExecutor> GitClient<E> {
     /// Abort the merge in progress and restore the pre-merge state.
     pub fn merge_abort(&mut self) -> Result<String, String> {
         self.text(&["merge", "--abort"])
+    }
+
+    /// Rebase the current branch onto `target` (a branch or commit).
+    ///
+    /// The working tree must be clean; git refuses otherwise and the error
+    /// is surfaced. Conflicts stop the rebase: resolve them (stage the
+    /// files) and call [`GitClient::rebase_continue`], or escape with
+    /// [`GitClient::rebase_abort`].
+    pub fn rebase_onto(&mut self, target: &str) -> Result<String, String> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err("A rebase target branch or commit is required.".to_string());
+        }
+        if target.starts_with('-') {
+            return Err(format!("Invalid rebase target `{target}`."));
+        }
+        self.text(&["rebase", target])
+    }
+
+    /// Rebase the branch `branch` onto `onto` without checking it out
+    /// (`git rebase <onto> <branch>`). Both must be local branches.
+    pub fn rebase_branch(&mut self, branch: &str, onto: &str) -> Result<String, String> {
+        let branch = branch.trim();
+        let onto = onto.trim();
+        if branch.is_empty() || onto.is_empty() {
+            return Err("A branch and a rebase target are required.".to_string());
+        }
+        if branch.starts_with('-') {
+            return Err(format!("Invalid branch name `{branch}`."));
+        }
+        if onto.starts_with('-') {
+            return Err(format!("Invalid rebase target `{onto}`."));
+        }
+        self.text(&["rebase", onto, branch])
+    }
+
+    /// Resume a stopped rebase after conflicts were resolved and staged.
+    pub fn rebase_continue(&mut self) -> Result<String, String> {
+        self.text(&["rebase", "--continue"])
+    }
+
+    /// Skip the commit that stopped the rebase and resume.
+    pub fn rebase_skip(&mut self) -> Result<String, String> {
+        self.text(&["rebase", "--skip"])
+    }
+
+    /// Abort the rebase in progress and restore the pre-rebase state.
+    pub fn rebase_abort(&mut self) -> Result<String, String> {
+        self.text(&["rebase", "--abort"])
+    }
+
+    /// Abort the cherry-pick in progress and restore the pre-pick state.
+    pub fn cherry_pick_abort(&mut self) -> Result<String, String> {
+        self.text(&["cherry-pick", "--abort"])
+    }
+
+    /// Resume a stopped cherry-pick after conflicts were resolved and staged.
+    pub fn cherry_pick_continue(&mut self) -> Result<String, String> {
+        self.text(&["cherry-pick", "--continue"])
+    }
+
+    /// Abort the revert in progress and restore the pre-revert state.
+    pub fn revert_abort(&mut self) -> Result<String, String> {
+        self.text(&["revert", "--abort"])
+    }
+
+    /// Resume a stopped revert after conflicts were resolved and staged.
+    pub fn revert_continue(&mut self) -> Result<String, String> {
+        self.text(&["revert", "--continue"])
+    }
+
+    /// Fetch remotes, optionally all of them and/or with `--prune`, which
+    /// deletes remote-tracking branches the remote no longer has.
+    pub fn fetch_with_prune(&mut self, all: bool, prune: bool) -> Result<String, String> {
+        let mut args = vec!["fetch".to_string()];
+        if all {
+            args.push("--all".to_string());
+        }
+        if prune {
+            args.push("--prune".to_string());
+        }
+        self.text_owned(&args)
+    }
+
+    /* ------------------------------------------------------------- bisect */
+
+    /// Start a bisect session. `bad` defaults to `HEAD` when empty, `good`
+    /// is a known-good revision (a tag, branch or hash).
+    pub fn bisect_start(&mut self, bad: Option<&str>, good: Option<&str>) -> Result<String, String> {
+        let mut args = vec!["bisect".to_string(), "start".to_string()];
+        if let Some(bad) = bad.map(str::trim).filter(|value| !value.is_empty()) {
+            let bad = self.safe_revision("bisect", bad)?;
+            args.push(bad);
+        }
+        if let Some(good) = good.map(str::trim).filter(|value| !value.is_empty()) {
+            let good = self.safe_revision("bisect", good)?;
+            args.push(good);
+        }
+        self.text_owned(&args)
+    }
+
+    /// Mark one revision (or the current one) as `good`, `bad` or `skip`
+    /// in the running bisect session.
+    pub fn bisect_mark(&mut self, kind: &str, rev: Option<&str>) -> Result<String, String> {
+        let kind = match kind {
+            "good" | "bad" | "skip" => kind,
+            other => return Err(format!("Invalid bisect mark `{other}`.")),
+        };
+        let mut args = vec!["bisect".to_string(), kind.to_string()];
+        if let Some(rev) = rev.map(str::trim).filter(|value| !value.is_empty()) {
+            args.push(self.safe_revision("bisect", rev)?);
+        }
+        self.text_owned(&args)
+    }
+
+    /// The `git bisect log` transcript: the current session, every mark and,
+    /// once found, the first bad commit.
+    pub fn bisect_log(&mut self) -> Result<String, String> {
+        self.text(&["bisect", "log"])
+    }
+
+    /// End the bisect session and return to the original HEAD.
+    pub fn bisect_reset(&mut self) -> Result<String, String> {
+        self.text(&["bisect", "reset"])
+    }
+
+    /* ------------------------------------------------------------ worktrees */
+
+    /// All linked worktrees (`git worktree list --porcelain`).
+    pub fn list_worktrees(&mut self) -> Result<Vec<WorktreeEntry>, String> {
+        let output = self.text(&["worktree", "list", "--porcelain"])?;
+        Ok(parse_worktrees(&output))
+    }
+
+    /// Add a linked worktree at `path` (absolute or relative to the repo
+    /// root). With `new_branch` the worktree checks out a freshly created
+    /// branch of that name; `start_ref` (a commit, branch or `origin/…`)
+    /// seeds it.
+    pub fn add_worktree(
+        &mut self,
+        path: &str,
+        new_branch: Option<&str>,
+        start_ref: Option<&str>,
+    ) -> Result<String, String> {
+        let path = validate_worktree_path(path)?;
+        let mut args = vec!["worktree".to_string(), "add".to_string()];
+        if let Some(branch) = new_branch.map(str::trim).filter(|value| !value.is_empty()) {
+            if branch.starts_with('-') {
+                return Err(format!("Invalid branch name `{branch}`."));
+            }
+            args.push("-b".to_string());
+            args.push(branch.to_string());
+        }
+        args.push(path);
+        if let Some(start_ref) = start_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            if start_ref.starts_with('-') {
+                return Err(format!("Invalid start ref `{start_ref}`."));
+            }
+            args.push(start_ref.to_string());
+        }
+        self.text_owned(&args)
+    }
+
+    /// Remove a linked worktree. With `force`, even dirty or locked
+    /// worktrees are removed.
+    pub fn remove_worktree(&mut self, path: &str, force: bool) -> Result<String, String> {
+        let path = validate_worktree_path(path)?;
+        let mut args = vec!["worktree".to_string(), "remove".to_string()];
+        if force {
+            args.push("--force".to_string());
+        }
+        args.push(path);
+        self.text_owned(&args)
+    }
+
+    /// Clean up worktree administrative files for deleted directories.
+    pub fn prune_worktrees(&mut self) -> Result<String, String> {
+        self.text(&["worktree", "prune"])
     }
 
     /// Delete a local branch. With `force`, uncommitted-to-upstream branches
@@ -1771,6 +2008,72 @@ fn validate_remote(name: &str, url: &str) -> Result<(String, String), String> {
     Ok((name.to_string(), url.to_string()))
 }
 
+/// Parse `git worktree list --porcelain` output into entries.
+///
+/// Blocks are `worktree <path>`, then `HEAD <sha>`, then one of
+/// `branch refs/heads/<name>`, `detached` or `bare`, separated by blank lines.
+fn parse_worktrees(output: &str) -> Vec<WorktreeEntry> {
+    let mut worktrees = Vec::new();
+    let mut path: Option<String> = None;
+    let mut head = String::new();
+    let mut branch: Option<String> = None;
+    let mut bare = false;
+    let mut detached = false;
+
+    let flush = |worktrees: &mut Vec<WorktreeEntry>,
+                 path: &mut Option<String>,
+                 head: &mut String,
+                 branch: &mut Option<String>,
+                 bare: &mut bool,
+                 detached: &mut bool| {
+        if let Some(p) = path.take() {
+            worktrees.push(WorktreeEntry {
+                path: p,
+                head: std::mem::take(head),
+                branch: branch.take(),
+                bare: std::mem::take(bare),
+                detached: std::mem::take(detached),
+            });
+        }
+    };
+
+    for line in output.lines() {
+        if line.is_empty() {
+            flush(&mut worktrees, &mut path, &mut head, &mut branch, &mut bare, &mut detached);
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("worktree ") {
+            flush(&mut worktrees, &mut path, &mut head, &mut branch, &mut bare, &mut detached);
+            path = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("HEAD ") {
+            head = value.trim().chars().take(7).collect();
+        } else if let Some(value) = line.strip_prefix("branch ") {
+            branch = value.trim().strip_prefix("refs/heads/").map(str::to_string);
+        } else if line == "bare" {
+            bare = true;
+        } else if line == "detached" {
+            detached = true;
+        }
+    }
+    flush(&mut worktrees, &mut path, &mut head, &mut branch, &mut bare, &mut detached);
+    worktrees
+}
+
+/// Validate a worktree path: non-empty, not option-like. Absolute paths are
+/// allowed on purpose — linked worktrees usually live outside the repo —
+/// but the arguments never touch a shell, so a hostile path cannot escape
+/// into a command.
+fn validate_worktree_path(path: &str) -> Result<String, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("A worktree path is required.".to_string());
+    }
+    if path.starts_with('-') {
+        return Err(format!("Invalid worktree path `{path}`."));
+    }
+    Ok(path.to_string())
+}
+
 /// Escape the characters gitignore treats specially at the start of a line.
 fn escape_gitignore_pattern(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('!') {
@@ -1883,16 +2186,58 @@ fn parse_commit_detail(input: &str) -> Result<CommitDetail, String> {
 
 fn clean_error(output: &CmdOutput) -> String {
     let stderr = output.stderr_lossy();
-    let detail = if stderr.trim().is_empty() {
+    let primary = if stderr.trim().is_empty() {
         output.stdout_lossy()
     } else {
         stderr
     };
-    detail.trim().to_string()
+    let trimmed = primary.trim();
+    // Diagnostics lead with `error:`, `fatal:` or `CONFLICT`; the rest is
+    // progress noise (for example `Rebasing (1/1)`, or checkout-filter
+    // chatter like `unix2dos: converting to …` from a text filter in the
+    // repository's attributes). When at least one diagnostic line exists,
+    // only those are surfaced so the status bar shows the real reason
+    // instead of the first few noise lines.
+    let mut diagnostics: Vec<&str> = Vec::new();
+    let mut progress: Option<&str> = None;
+    for line in trimmed.lines() {
+        let line = line.trim_start();
+        if line.starts_with("error:")
+            || line.starts_with("fatal:")
+            || line.starts_with("CONFLICT")
+        {
+            diagnostics.push(line);
+        } else if line.starts_with("Rebasing (") && line.ends_with(')') {
+            progress = Some(line);
+        }
+    }
+    if !diagnostics.is_empty() {
+        let mut parts: Vec<String> = Vec::with_capacity(diagnostics.len() + 1);
+        if let Some(progress) = progress {
+            // The last `Rebasing (n/m)` line tells how far a multi-commit
+            // rebase got before it stopped.
+            parts.push(progress.to_string());
+        }
+        parts.extend(diagnostics.iter().map(|line| (*line).to_string()));
+        return parts.join("\n");
+    }
+    trimmed.to_string()
 }
 
 fn git_failure(args: &[String], output: &CmdOutput) -> String {
-    let detail = clean_error(output);
+    let mut detail = clean_error(output);
+    // Conflict details land on stdout for some commands (rebase, revert and
+    // cherry-pick write their progress to stderr); keep them in the error so
+    // the UI can react and users see which files conflict.
+    let stdout = output.stdout_lossy();
+    if stdout.contains("CONFLICT") && !detail.contains("CONFLICT") {
+        let stdout = stdout.trim();
+        detail = if detail.is_empty() {
+            stdout.to_string()
+        } else {
+            format!("{detail}\n{stdout}")
+        };
+    }
     if detail.is_empty() {
         match output.status {
             Some(status) => format!("git {} failed with exit code {status}", args.join(" ")),
@@ -2299,6 +2644,66 @@ mod tests {
     }
 
     #[test]
+    fn error_extraction_prefers_diagnostics_over_filter_noise() {
+        // A text filter (e.g. `unix2dos` from .gitattributes) floods stderr
+        // with progress on every checkout; the real reason must win.
+        let noisy = CmdOutput {
+            status: Some(1),
+            stdout: Vec::new(),
+            stderr: "unix2dos: converting to DOS format from UNIX format\n\
+                     unix2dos: converting to DOS format from UNIX format\n\
+                     error: Committing is not possible because you have unmerged files.\n\
+                     hint: Fix them up in the work tree, and then use 'git add/rm <file>'"
+                .as_bytes()
+                .to_vec(),
+        };
+        let error = git_failure(
+            &["rebase".to_string(), "--continue".to_string()],
+            &noisy,
+        );
+        assert!(error.contains("git rebase --continue failed"), "{error}");
+        assert!(error.contains("unmerged files"), "{error}");
+        assert!(!error.contains("unix2dos"), "{error}");
+
+        // Conflicts land on stdout for rebase-style commands; the error:
+        // line from stderr plus the CONFLICT line both surface, and the
+        // last `Rebasing (n/m)` progress line shows how far a multi-commit
+        // rebase got before it stopped.
+        let conflicted = CmdOutput {
+            status: Some(1),
+            stdout: "CONFLICT (add/add): Merge conflict in src/app/AGENTS.md\n\
+                     hint: Resolve all conflicts manually, mark them as resolved with \"git add\"\n"
+                .as_bytes()
+                .to_vec(),
+            stderr: "Rebasing (6/82)\n\
+                     Rebasing (65/82)\n\
+                     Rebasing (66/82)\n\
+                     error: could not apply 33ef3d852... Add shared agent setup\n"
+                .as_bytes()
+                .to_vec(),
+        };
+        let error = git_failure(
+            &["rebase".to_string(), "main".to_string()],
+            &conflicted,
+        );
+        assert!(error.contains("Rebasing (66/82)"), "{error}");
+        assert!(!error.contains("Rebasing (6/82)"), "{error}");
+        assert!(!error.contains("Rebasing (65/82)"), "{error}");
+        assert!(error.contains("error: could not apply"), "{error}");
+        assert!(error.contains("CONFLICT (add/add)"), "{error}");
+        assert!(error.contains("git rebase main failed"), "{error}");
+
+        // Without any diagnostic line the raw text is kept as before.
+        let only_noise = CmdOutput {
+            status: Some(1),
+            stdout: Vec::new(),
+            stderr: b"Rebasing (1/3)\n".to_vec(),
+        };
+        let error = git_failure(&["rebase".to_string()], &only_noise);
+        assert!(error.contains("Rebasing (1/3)"), "{error}");
+    }
+
+    #[test]
     fn fetch_and_push_forward_arguments() {
         let mut fetch = client_with(
             MockExecutor::default()
@@ -2408,6 +2813,312 @@ mod tests {
     }
 
     #[test]
+    fn rebase_commands_build_expected_argument_lists() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "rebased\n")
+                .with(0, "rebased\n")
+                .with(0, "continued\n")
+                .with(0, "skipped\n")
+                .with(0, "aborted\n"),
+        );
+        client.rebase_onto("origin/main").unwrap();
+        client.rebase_branch("feature", "main").unwrap();
+        client.rebase_continue().unwrap();
+        client.rebase_skip().unwrap();
+        client.rebase_abort().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rebase", "origin/main"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rebase", "main", "feature"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rebase", "--continue"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rebase", "--skip"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["rebase", "--abort"]));
+
+        // Option-looking targets are rejected before git sees them.
+        let mut bad = client_with(MockExecutor::default().with(0, "C:/project\n"));
+        assert!(bad.rebase_onto("--force").is_err());
+        assert!(bad.rebase_branch("-x", "main").is_err());
+        assert!(bad.rebase_branch("feature", "--dry-run").is_err());
+        assert!(bad.rebase_onto("").is_err());
+        assert!(bad.rebase_branch("", "").is_err());
+        assert!(!bad
+            .executor
+            .calls
+            .iter()
+            .any(|call| call[0] == "rebase"));
+    }
+
+    #[test]
+    fn cherry_pick_and_revert_continue_abort_build_commands() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "aborted\n")
+                .with(0, "continued\n")
+                .with(0, "aborted\n")
+                .with(0, "continued\n"),
+        );
+        client.cherry_pick_abort().unwrap();
+        client.cherry_pick_continue().unwrap();
+        client.revert_abort().unwrap();
+        client.revert_continue().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["cherry-pick", "--abort"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["cherry-pick", "--continue"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["revert", "--abort"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["revert", "--continue"]));
+    }
+
+    #[test]
+    fn fetch_with_prune_builds_flag_combinations() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "f\n")
+                .with(0, "f\n")
+                .with(0, "f\n")
+                .with(0, "f\n"),
+        );
+        client.fetch_with_prune(true, false).unwrap();
+        client.fetch_with_prune(false, true).unwrap();
+        client.fetch_with_prune(true, true).unwrap();
+        client.fetch_with_prune(false, false).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["fetch", "--all"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["fetch", "--prune"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["fetch", "--all", "--prune"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["fetch"]));
+    }
+
+    #[test]
+    fn pull_with_options_accepts_the_rebase_strategy() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "pulled\n"),
+        );
+        client
+            .pull_with_options(Some("origin"), Some("main"), false, true)
+            .unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["pull", "--rebase", "origin", "main"]));
+
+        // Fast-forward and rebase are exclusive strategies; ff wins as the
+        // first flag, mirroring the dialog's radio buttons.
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "pulled\n"),
+        );
+        client.pull_with_options(None, None, true, true).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["pull", "--ff-only", "--rebase"]));
+    }
+
+    #[test]
+    fn bisect_marks_validate_kind_and_rev() {
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "started\n")
+                .with(0, "bad\n")
+                .with(0, "good\n")
+                .with(0, "skipped\n")
+                .with(0, "log\n")
+                .with(0, "reset\n"),
+        );
+        client.bisect_start(Some("HEAD"), Some("v1.0")).unwrap();
+        client.bisect_mark("bad", Some("abc123")).unwrap();
+        client.bisect_mark("good", None).unwrap();
+        client.bisect_mark("skip", None).unwrap();
+        client.bisect_log().unwrap();
+        client.bisect_reset().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["bisect", "start", "HEAD", "v1.0"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["bisect", "bad", "abc123"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["bisect", "good"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["bisect", "skip"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["bisect", "log"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["bisect", "reset"]));
+
+        // Unknown kinds and option-like revisions never reach git.
+        let mut bad = client_with(MockExecutor::default().with(0, "C:/project\n"));
+        assert!(bad.bisect_mark("banana", None).is_err());
+        assert!(bad.bisect_mark("good", Some("-f")).is_err());
+        assert!(bad.bisect_start(Some("--rebase"), None).is_err());
+        assert!(!bad.executor.calls.iter().any(|call| call[0] == "bisect"));
+    }
+
+    #[test]
+    fn worktree_commands_build_expected_argument_lists() {
+        let porcelain = "worktree C:/repo\nHEAD abc1234\nbranch refs/heads/main\n\n\
+                         worktree C:/wt/other\nHEAD def5678\ndetached\n";
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, porcelain)
+                .with(0, "added\n")
+                .with(0, "added\n")
+                .with(0, "removed\n")
+                .with(0, "pruned\n"),
+        );
+        let worktrees = client.list_worktrees().unwrap();
+        assert_eq!(worktrees.len(), 2);
+        assert_eq!(worktrees[0].path, "C:/repo");
+        assert_eq!(worktrees[0].head, "abc1234");
+        assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
+        assert!(!worktrees[0].detached);
+        assert_eq!(worktrees[1].path, "C:/wt/other");
+        assert_eq!(worktrees[1].head, "def5678");
+        assert!(worktrees[1].branch.is_none());
+        assert!(worktrees[1].detached);
+
+        client
+            .add_worktree("C:/wt/new", Some("topic"), Some("origin/main"))
+            .unwrap();
+        client.add_worktree("C:/wt/plain", None, None).unwrap();
+        client.remove_worktree("C:/wt/old", false).unwrap();
+        client.remove_worktree("C:/wt/dirty", true).unwrap();
+        client.prune_worktrees().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["worktree", "add", "-b", "topic", "C:/wt/new", "origin/main"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["worktree", "add", "C:/wt/plain"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["worktree", "remove", "C:/wt/old"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["worktree", "remove", "--force", "C:/wt/dirty"]));
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["worktree", "prune"]));
+
+        let mut bad = client_with(MockExecutor::default().with(0, "C:/project\n"));
+        assert!(bad.add_worktree("", None, None).is_err());
+        assert!(bad.add_worktree("-f", None, None).is_err());
+        assert!(bad.add_worktree("C:/wt/x", Some("-b"), None).is_err());
+        assert!(bad.add_worktree("C:/wt/x", None, Some("--force")).is_err());
+        assert!(bad.remove_worktree("--all", false).is_err());
+        assert!(!bad
+            .executor
+            .calls
+            .iter()
+            .any(|call| call[0] == "worktree"));
+    }
+
+    #[test]
+    fn parse_worktrees_covers_bare_and_mixed_output() {
+        let porcelain = "worktree /repo\nbare\n\n\
+                         worktree /wt/one\nHEAD aaaaaaa\nbranch refs/heads/topic\n\n\
+                         worktree /wt/two\nHEAD bbbbbbb\ndetached\n\n";
+        let worktrees = parse_worktrees(porcelain);
+        assert_eq!(worktrees.len(), 3);
+        assert!(worktrees[0].bare);
+        assert!(worktrees[0].branch.is_none());
+        assert!(worktrees[0].head.is_empty());
+        assert_eq!(worktrees[1].branch.as_deref(), Some("topic"));
+        assert!(!worktrees[1].bare);
+        assert!(!worktrees[1].detached);
+        assert!(worktrees[2].detached);
+        assert_eq!(worktrees[2].branch.as_deref(), None);
+        // Empty and non-porcelain input degrade gracefully.
+        assert!(parse_worktrees("").is_empty());
+        assert!(parse_worktrees("garbage\nlines\n").is_empty());
+    }
+
+    #[test]
     fn branch_operations_build_expected_commands() {
         let mut client = client_with(
             MockExecutor::default()
@@ -2493,7 +3204,7 @@ mod tests {
                 .with(0, "pushed\n"),
         );
         client
-            .pull_with_options(Some("origin"), None, true)
+            .pull_with_options(Some("origin"), None, true, false)
             .unwrap();
         assert!(client
             .executor

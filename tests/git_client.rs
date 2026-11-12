@@ -1395,3 +1395,333 @@ fn repo_stamp_tracks_repository_changes() {
     let plain = tempfile::tempdir().unwrap();
     assert!(git_jet::repo_stamp(plain.path().to_str().unwrap()).is_none());
 }
+
+/* ============================ rebase / bisect / worktrees ================== */
+
+#[test]
+fn rebase_onto_moves_the_branch_on_top_of_the_target() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    git(dir.path(), &["switch", "-q", "-c", "feature"]);
+    let feature_tip = commit_change(&dir, "feature.txt", "feature\n", "feature work");
+    git(dir.path(), &["switch", "-q", "main"]);
+    commit_change(&dir, "main.txt", "main side\n", "main side commit");
+    git(dir.path(), &["switch", "-q", "feature"]);
+
+    client.rebase_onto("main").unwrap();
+
+    let log = git(dir.path(), &["log", "--format=%s"]);
+    assert!(log.contains("feature work"), "{log}");
+    assert!(log.contains("main side commit"), "{log}");
+    assert!(log.contains("initial commit"), "{log}");
+    let merges = git(dir.path(), &["log", "--merges", "--oneline"]);
+    assert!(merges.trim().is_empty(), "rebase must not create merges: {merges}");
+    // Linearization: the replayed feature commit sits directly on main's tip.
+    assert_eq!(
+        git(dir.path(), &["rev-parse", "HEAD~1"]).trim(),
+        git(dir.path(), &["rev-parse", "main"]).trim(),
+        "the feature commit must replay on top of main"
+    );
+    // The feature file stays because the replayed commit re-applies it.
+    assert_eq!(fs::read_to_string(dir.path().join("feature.txt")).unwrap(), "feature\n");
+
+    let report = client.status().unwrap();
+    assert!(!report.rebase_in_progress);
+    assert!(report.conflicts().is_empty());
+
+    // Option-like targets are rejected before git runs.
+    assert!(client.rebase_onto("--force").is_err());
+    assert!(client.rebase_onto("").is_err());
+}
+
+#[test]
+fn rebase_conflict_can_be_resolved_continued_or_aborted() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    git(dir.path(), &["switch", "-q", "-c", "feature"]);
+    let feature_tip = commit_change(&dir, "a.txt", "feature side\n", "feature side changed");
+    git(dir.path(), &["switch", "-q", "main"]);
+    commit_change(&dir, "a.txt", "main side\n", "main side changed");
+    git(dir.path(), &["switch", "-q", "feature"]);
+
+    let error = client.rebase_onto("main").unwrap_err();
+    assert!(error.contains("CONFLICT"), "{error}");
+
+    let report = client.status().unwrap();
+    assert!(report.rebase_in_progress, "the rebase must be detectable");
+    assert_eq!(report.conflicts().len(), 1);
+
+    // Abort restores the pre-rebase branch tip.
+    client.rebase_abort().unwrap();
+    let report = client.status().unwrap();
+    assert!(!report.rebase_in_progress);
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), feature_tip);
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "feature side\n");
+
+    // Retry, resolve the conflict through the merge editor and continue.
+    client.rebase_onto("main").unwrap_err();
+    client.write_merge_result("a.txt", "resolved\n").unwrap();
+    client.rebase_continue().unwrap();
+
+    let report = client.status().unwrap();
+    assert!(!report.rebase_in_progress);
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "resolved\n");
+    let log = git(dir.path(), &["log", "--format=%s"]);
+    assert!(log.contains("feature side changed"), "{log}");
+    assert!(log.contains("main side changed"), "{log}");
+    assert!(log.contains("initial commit"), "{log}");
+}
+
+#[test]
+fn pull_rebase_replays_local_commits_on_top_of_the_upstream() {
+    let (holder, _client_dir) = clone_of_bare_remote();
+    let remote_url = holder.path().join("origin.git").to_string_lossy().into_owned();
+    let work_dir = tempfile::tempdir().unwrap();
+    git(
+        work_dir.path(),
+        &["clone", "-q", "-c", "user.name=Git Jet Tests", "-c", "user.email=git-jet@example.test",
+          remote_url.as_str(), work_dir.path().join("worktree").to_str().unwrap()],
+    );
+    let worktree = work_dir.path().join("worktree");
+    test_git_config(&worktree);
+    let mut client = GitClient::new(StdExecutor, worktree.to_str().unwrap().to_string());
+
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    client.push().unwrap();
+
+    // The remote advances from a second clone.
+    let second_dir = tempfile::tempdir().unwrap();
+    git(
+        second_dir.path(),
+        &["clone", "-q", "-c", "user.name=Git Jet Tests", "-c", "user.email=git-jet@example.test",
+          remote_url.as_str(), second_dir.path().join("worktree").to_str().unwrap()],
+    );
+    let second = second_dir.path().join("worktree");
+    write(&second, "b.txt", "remote side\n");
+    git(&second, &["add", "--all"]);
+    git(&second, &["commit", "-q", "-m", "on the remote"]);
+    git(&second, &["push", "-q", "origin", "main"]);
+
+    // A local commit that diverges from the upstream.
+    write(&worktree, "c.txt", "local side\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "local side"]);
+
+    client.pull_with_options(None, None, false, true).unwrap();
+
+    let log = git(&worktree, &["log", "--format=%s"]);
+    assert!(log.starts_with("local side"), "{log}");
+    assert!(log.contains("on the remote"), "{log}");
+    let merges = git(&worktree, &["log", "--merges", "--oneline"]);
+    assert!(merges.trim().is_empty(), "pull --rebase must not merge: {merges}");
+}
+
+#[test]
+fn cherry_pick_conflict_can_be_aborted() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    git(dir.path(), &["switch", "-q", "-c", "source"]);
+    let picked = commit_change(&dir, "a.txt", "source side\n", "source side changed");
+    git(dir.path(), &["switch", "-q", "main"]);
+    let head_before = commit_change(&dir, "a.txt", "main side\n", "main side changed");
+
+    let error = client.cherry_pick_commit(&picked).unwrap_err();
+    assert!(error.contains("CONFLICT"), "{error}");
+    let report = client.status().unwrap();
+    assert!(report.cherry_pick_in_progress);
+
+    client.cherry_pick_abort().unwrap();
+    let report = client.status().unwrap();
+    assert!(!report.cherry_pick_in_progress);
+    assert!(report.conflicts().is_empty());
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), head_before);
+}
+
+#[test]
+fn revert_conflict_can_be_resolved_and_continued_or_aborted() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    commit_change(&dir, "a.txt", "one\n", "first change");
+    let reverted = commit_change(&dir, "a.txt", "two\n", "second change");
+    commit_change(&dir, "a.txt", "three\n", "third change");
+
+    // Reverting the middle commit while HEAD carries "three" conflicts.
+    let error = client.revert_commit(&reverted).unwrap_err();
+    assert!(error.contains("CONFLICT"), "{error}");
+    let report = client.status().unwrap();
+    assert!(report.revert_in_progress);
+
+    client.revert_abort().unwrap();
+    let report = client.status().unwrap();
+    assert!(!report.revert_in_progress);
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "three\n");
+    let head_before = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+
+    // Retry and resolve: the reverted content is the pre-change state.
+    client.revert_commit(&reverted).unwrap_err();
+    client.write_merge_result("a.txt", "one\n").unwrap();
+    client.revert_continue().unwrap();
+    let report = client.status().unwrap();
+    assert!(!report.revert_in_progress);
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "one\n");
+    let count = git(dir.path(), &["rev-list", "--count", "HEAD"]).trim().to_string();
+    assert_eq!(count, "5", "the revert creates one extra commit");
+    assert_ne!(git(dir.path(), &["rev-parse", "HEAD"]).trim(), head_before);
+}
+
+#[test]
+fn fetch_prune_removes_gone_remote_branches() {
+    let (holder, client_dir) = clone_of_bare_remote();
+    let worktree = client_dir.path().join("worktree");
+    test_git_config(&worktree);
+    let mut client = GitClient::new(StdExecutor, worktree.to_str().unwrap().to_string());
+
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    client.push().unwrap();
+
+    // Push a second branch, then delete it on the remote side directly.
+    // The local remote-tracking ref origin/temp survives until a pruned
+    // fetch (a `push --delete` would clean it up immediately).
+    git(&worktree, &["switch", "-q", "-c", "temp"]);
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "temp work"]);
+    client
+        .push_with_options(Some("origin"), Some("temp"), false, true)
+        .unwrap();
+    git(&holder.path().join("origin.git"), &["branch", "-D", "temp"]);
+    let remotes = git(&worktree, &["branch", "-r", "--format=%(refname:short)"]);
+    assert!(remotes.contains("origin/temp"), "{remotes}");
+
+    client.fetch_with_prune(true, true).unwrap();
+    let remotes = git(&worktree, &["branch", "-r", "--format=%(refname:short)"]);
+    assert!(!remotes.contains("origin/temp"), "{remotes}");
+    assert!(remotes.contains("origin/main"), "{remotes}");
+}
+
+#[test]
+fn bisect_marks_commits_and_reports_the_bad_one() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+    let good = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+    commit_change(&dir, "a.txt", "broken\n", "introduce the bug");
+    let bad = commit_change(&dir, "a.txt", "more broken\n", "worsen the bug");
+
+    client.bisect_start(Some("HEAD"), Some(&good)).unwrap();
+
+    let report = client.status().unwrap();
+    assert!(report.bisect_in_progress);
+    assert!(
+        matches!(report.branch.head, git_jet::core::Head::Detached),
+        "bisect checks out candidate commits"
+    );
+
+    // Two bad commits after the good one: git checks out the middle one.
+    let middle = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(middle, bad, "bisect must test the middle, not the tip");
+    assert_ne!(middle, good, "bisect must test a candidate, not the known-good");
+
+    client.bisect_mark("good", None).unwrap();
+    // The final mark names the culprit; modern git resets automatically.
+    if client.status().unwrap().bisect_in_progress {
+        client.bisect_reset().unwrap();
+    }
+    let report = client.status().unwrap();
+    assert!(!report.bisect_in_progress);
+
+    // The transcript keeps the whole session; reset returned to the branch.
+    let log = git(dir.path(), &["log", "--format=%s", "-1"]);
+    assert!(log.contains("worsen the bug"), "{log}");
+
+    // Validation: unknown kinds and option-like revisions never reach git.
+    assert!(client.bisect_mark("banana", None).is_err());
+    assert!(client.bisect_mark("good", Some("-f")).is_err());
+    assert!(client.bisect_start(Some("--rebase"), None).is_err());
+}
+
+#[test]
+fn worktrees_can_be_added_listed_and_removed() {
+    let dir = init_repo();
+    let mut client = client(&dir);
+
+    let linked = client.list_worktrees().unwrap();
+    assert_eq!(linked.len(), 1);
+    assert!(linked[0].branch.as_deref() == Some("main"), "{linked:?}");
+    assert!(!linked[0].bare);
+
+    // Add a linked worktree with a new branch.
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("linked").to_string_lossy().replace('\\', "/");
+    client.add_worktree(&path, Some("topic"), None).unwrap();
+
+    let worktrees = client.list_worktrees().unwrap();
+    assert_eq!(worktrees.len(), 2);
+    let topic = worktrees
+        .iter()
+        .find(|worktree| worktree.path.ends_with("/linked"))
+        .expect("the new worktree is listed");
+    assert_eq!(topic.branch.as_deref(), Some("topic"));
+    let branches = git(dir.path(), &["branch", "--format=%(refname:short)"]);
+    assert!(branches.contains("topic"), "{branches}");
+
+    // Remove it again; prune is a no-op afterwards.
+    client.remove_worktree(&path, false).unwrap();
+    let worktrees = client.list_worktrees().unwrap();
+    assert_eq!(worktrees.len(), 1);
+    client.prune_worktrees().unwrap();
+
+    // Validation: empty and option-like paths never reach git.
+    assert!(client.add_worktree("", None, None).is_err());
+    assert!(client.add_worktree("-f", None, None).is_err());
+    assert!(client.remove_worktree("--all", false).is_err());
+}
+
+#[test]
+fn rebase_in_progress_is_detected_for_pull_rebase_conflicts_too() {
+    let (holder, _client_dir) = clone_of_bare_remote();
+    let remote_url = holder.path().join("origin.git").to_string_lossy().into_owned();
+    let work_dir = tempfile::tempdir().unwrap();
+    git(
+        work_dir.path(),
+        &["clone", "-q", "-c", "user.name=Git Jet Tests", "-c", "user.email=git-jet@example.test",
+          remote_url.as_str(), work_dir.path().join("worktree").to_str().unwrap()],
+    );
+    let worktree = work_dir.path().join("worktree");
+    test_git_config(&worktree);
+    let mut pull_client = GitClient::new(StdExecutor, worktree.to_str().unwrap().to_string());
+
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    pull_client.push().unwrap();
+
+    let second_dir = tempfile::tempdir().unwrap();
+    git(
+        second_dir.path(),
+        &["clone", "-q", "-c", "user.name=Git Jet Tests", "-c", "user.email=git-jet@example.test",
+          remote_url.as_str(), second_dir.path().join("worktree").to_str().unwrap()],
+    );
+    let second = second_dir.path().join("worktree");
+    write(&second, "a.txt", "remote side\n");
+    git(&second, &["add", "--all"]);
+    git(&second, &["commit", "-q", "-m", "on the remote"]);
+    git(&second, &["push", "-q", "origin", "main"]);
+
+    write(&worktree, "a.txt", "local side\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "local side"]);
+
+    let error = pull_client.pull_with_options(None, None, false, true).unwrap_err();
+    assert!(error.contains("CONFLICT"), "{error}");
+    let report = pull_client.status().unwrap();
+    assert!(report.rebase_in_progress, "pull --rebase conflicts must show the banner: {report:?}");
+
+    pull_client.rebase_abort().unwrap();
+    let report = pull_client.status().unwrap();
+    assert!(!report.rebase_in_progress);
+}

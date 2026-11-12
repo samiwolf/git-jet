@@ -1031,14 +1031,14 @@ dependencies = [
 
 [[package]]
 name = "git-jet"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "git-jet-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "git-jet",
  "serde",

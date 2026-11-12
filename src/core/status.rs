@@ -113,6 +113,8 @@ pub fn parse_status_v2(bytes: &[u8]) -> Result<StatusReport, String> {
         merge_in_progress: false,
         cherry_pick_in_progress: false,
         revert_in_progress: false,
+        rebase_in_progress: false,
+        bisect_in_progress: false,
     })
 }
 
