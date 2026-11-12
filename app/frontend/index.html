@@ -179,7 +179,7 @@
       <div class="dialog-card">
         <div class="dialog-title">Push</div>
         <div class="dialog-row">
-          <input id="push-remote" class="text-input" placeholder="Remote (default push)" />
+          <input id="push-remote" class="text-input" placeholder="Remote (optional)" />
           <input id="push-branch" class="text-input" placeholder="Branch (optional)" />
         </div>
         <div class="dialog-checks">
@@ -243,7 +243,10 @@
     <!-- Multi-line message dialog (squash / edit commit message) -->
     <div id="message-dialog" class="dialog hidden">
       <div class="dialog-card">
-        <div class="dialog-title" id="message-title">Message</div>
+        <div class="dialog-head">
+          <span class="dialog-icon">✎</span>
+          <div class="dialog-title" id="message-title">Message</div>
+        </div>
         <textarea id="message-input" class="message-input" rows="7" spellcheck="false"></textarea>
         <p id="message-error" class="dialog-error"></p>
         <div class="dialog-actions">
@@ -297,7 +300,10 @@
     <!-- Generic prompt dialog (rename branch, new branch from ref, tags…) -->
     <div id="prompt-dialog" class="dialog hidden">
       <div class="dialog-card">
-        <div class="dialog-title" id="prompt-title">Input</div>
+        <div class="dialog-head">
+          <span class="dialog-icon">✎</span>
+          <div class="dialog-title" id="prompt-title">Input</div>
+        </div>
         <div class="dialog-row">
           <input id="prompt-input" class="text-input" />
         </div>
@@ -330,6 +336,21 @@
         <div class="dialog-actions">
           <button id="merge-cancel" class="btn">Cancel</button>
           <button id="merge-apply" class="btn primary">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation dialog (styled replacement for native confirm) -->
+    <div id="confirm-dialog" class="dialog hidden">
+      <div class="dialog-card confirm-card">
+        <div class="dialog-head">
+          <span id="confirm-icon" class="dialog-icon">?</span>
+          <div class="dialog-title" id="confirm-title">Confirm</div>
+        </div>
+        <p id="confirm-message" class="dialog-message"></p>
+        <div class="dialog-actions">
+          <button id="confirm-cancel" class="btn">Cancel</button>
+          <button id="confirm-ok" class="btn primary">OK</button>
         </div>
       </div>
     </div>

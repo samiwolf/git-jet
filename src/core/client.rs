@@ -884,8 +884,12 @@ impl<E: GitExecutor> GitClient<E> {
         }
     }
 
-    /// Push with dialog options: explicit remote and branch, optional
-    /// upstream tracking and force push.
+    /// Push with dialog options: optional remote and branch, upstream
+    /// tracking and force push.
+    ///
+    /// Empty fields fall back like `pull`: no remote pushes `HEAD` to its
+    /// default remote; a remote without a branch pushes the current branch
+    /// under its own name.
     ///
     /// Force pushes use `--force-with-lease` so remote commits fetched after
     /// the checkout cannot be silently discarded.
@@ -913,10 +917,20 @@ impl<E: GitExecutor> GitClient<E> {
                 args.push(remote.to_string());
                 args.push(format!("{branch}:{branch}"));
             }
-            (Some(_), None) => {
-                return Err(
-                    "A branch name is required when a remote is given.".to_string()
-                )
+            (Some(remote), None) => {
+                // Remote without an explicit branch: push the current branch
+                // under its own name, like the toolbar Push button does.
+                let current = match self.current_branch() {
+                    Some(current) => current,
+                    None => {
+                        return Err(
+                            "Push needs a branch; commit inside a branch first (detached HEAD)."
+                                .to_string(),
+                        )
+                    }
+                };
+                args.push(remote.to_string());
+                args.push(format!("{current}:{current}"));
             }
             (None, _) => args.push("HEAD".to_string()),
         }
@@ -2446,6 +2460,17 @@ mod tests {
             .iter()
             .any(|call| call == &vec!["push", "--force-with-lease", "HEAD"]));
 
+        // A remote without a branch pushes the current branch under its own
+        // name (like the toolbar Push button) instead of erroring.
+        let mut client = client_with(MockExecutor::default().with(0, "main\n"));
+        client.push_with_options(Some("origin"), None, false, false).unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["push", "origin", "main:main"]));
+
+        // Detached HEAD still fails: there is no branch name to push.
         assert!(client.push_with_options(Some("origin"), None, false, false).is_err());
     }
 

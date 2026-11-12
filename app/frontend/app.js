@@ -460,7 +460,9 @@ function rollbackButton(entry, section) {
 async function rollbackFiles(paths, level, display) {
   const description = ROLLBACK_LABEL[level] || "Rollback";
   const question = Array.isArray(display) ? display.join("\n") : (display || paths.join("\n"));
-  if (!confirm(`${description}\n\n${question}\n\nDiscarded changes cannot be undone. Continue?`)) return;
+  if (!(await confirmDialog(description,
+    `${question}\n\nDiscarded changes cannot be undone.`,
+    { danger: true, okLabel: "Discard" }))) return;
   await runAction("Rollback", () => invoke("rollback_files", { paths, level }));
 }
 
@@ -481,7 +483,8 @@ async function rollbackHunk(file, chunk) {
   const effect = target === "staged"
     ? "Unstage this hunk?"
     : "Discard this hunk from the working tree?";
-  if (!confirm(`${effect}\n\nDiscarded changes cannot be undone. Continue?`)) return;
+  if (!(await confirmDialog(effect, "Discarded changes cannot be undone.",
+    { danger: target !== "staged", okLabel: target === "staged" ? "Unstage" : "Discard" }))) return;
   const label = target === "staged" ? "Unstage hunk" : "Rollback hunk";
   await runAction(label, () => invoke("discard_hunk", { patch, staged: target === "staged" }));
 }
@@ -661,8 +664,10 @@ function repoMenuItems() {
     { label: "Fetch ⮁ All", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
     { label: "Incoming commits…", hint: `↓ ${behind}`, run: openIncomingDialog },
     { label: "Manage remotes…", run: openRemotesDialog },
-    { label: "Reset changes (hard)", danger: true, run: () =>
-      { if (confirm("Hard reset of the current branch to HEAD?\n\nAll uncommitted staged and worktree changes will be deleted!")) {
+    { label: "Reset changes (hard)", danger: true, run: async () =>
+      { if (await confirmDialog("Hard reset",
+          "Reset the current branch to HEAD?\n\nAll uncommitted staged and worktree changes will be deleted.",
+          { danger: true, okLabel: "Hard reset" })) {
         void runAction("Hard reset", () => invoke("reset_branch", { sha: "HEAD", mode: "hard" }));
       } } },
     { label: "Refresh", hint: "F5", run: refreshAll },
@@ -687,8 +692,9 @@ function rows() {
       el("span", "merge-abort-text", "Merging — resolve conflicts, stage and commit."),
       (() => {
         const btn = el("button", "btn small", "Abort merge");
-        btn.addEventListener("click", () => {
-          if (!confirm("Abort the merge?\n\nThe pre-merge state will be restored.")) return;
+        btn.addEventListener("click", async () => {
+          if (!(await confirmDialog("Abort the merge?", "The pre-merge state will be restored.",
+            { okLabel: "Abort" }))) return;
           void runAction("Abort merge", () => invoke("merge_abort"), true, btn);
         });
         return btn;
@@ -748,10 +754,6 @@ function rows() {
       }
       list.append(row);
     }
-  }
-
-  if (!anyShown) {
-    list.append(el("div", "empty-hint", "✔ Working tree is clean"));
   }
 }
 
@@ -1269,17 +1271,14 @@ function selectCommit(commit, node) {
 
 /* Check out a commit directly (detached HEAD). The working tree moves to that
    commit; the Branch menu on the branch bar switches back to any branch. */
-function checkoutCommit(sha, subject) {
+async function checkoutCommit(sha, subject) {
   const head = subject ? `${sha.slice(0, 10)} — ${subject}` : sha.slice(0, 10);
-  if (
-    !confirm(
-      `Check out commit ${head}?\n\nThe working tree moves to this commit and HEAD detaches.` +
-        "\nNothing is lost: local changes are kept and no commits are deleted." +
-        "\nUse the branch menu to switch back to a branch afterwards."
-    )
-  ) {
-    return;
-  }
+  const ok = await confirmDialog(`Check out commit ${head}?`,
+    "The working tree moves to this commit and HEAD detaches.\n" +
+    "Nothing is lost: local changes are kept and no commits are deleted.\n" +
+    "Use the branch menu to switch back to a branch afterwards.",
+    { okLabel: "Check out" });
+  if (!ok) return;
   void runAction(`Checkout ${sha.slice(0, 10)}`, () => invoke("checkout_commit", { sha }));
 }
 
@@ -1436,18 +1435,48 @@ function promptDialog(title, placeholder, initial, mode, onSubmit) {
 }
 
 function closeDialogs() {
+  // A pending confirmation counts as cancelled (same as the native confirm).
+  resolveConfirm(false);
   // The merge editor confirms with the user while conflicts are unresolved.
   if (!$("merge-dialog").classList.contains("hidden")) {
-    closeMergeEditor();
+    void closeMergeEditor();
     return;
   }
   for (const id of [
     "pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog",
     "incoming-dialog", "remotes-dialog", "message-dialog", "clone-dialog",
-    "oplog-dialog",
+    "oplog-dialog", "confirm-dialog",
   ]) {
     hide($(id));
   }
+}
+
+/* Promise-based confirmation dialog replacing the native window.confirm:
+   an icon, a title and a pre-line message, with a red OK button for
+   destructive actions. Resolves true on OK, false on cancel/Escape. */
+let confirmHandler = null;
+function resolveConfirm(value) {
+  if (confirmHandler) confirmHandler(value);
+}
+function confirmDialog(title, message, options = {}) {
+  $("confirm-title").textContent = title;
+  $("confirm-message").textContent = message || "";
+  const ok = $("confirm-ok");
+  ok.textContent = options.okLabel || "OK";
+  ok.classList.toggle("danger", Boolean(options.danger));
+  ok.classList.toggle("primary", !options.danger);
+  const icon = $("confirm-icon");
+  icon.textContent = options.danger ? "⚠" : "?";
+  icon.classList.toggle("danger", Boolean(options.danger));
+  show($("confirm-dialog"));
+  ok.focus();
+  return new Promise((resolve) => {
+    confirmHandler = (value) => {
+      confirmHandler = null;
+      hide($("confirm-dialog"));
+      resolve(value);
+    };
+  });
 }
 
 /* Runs a history-changing operation; after conflicts the tree guide tells
@@ -1461,15 +1490,19 @@ async function runHistoryAction(label, fn) {
 }
 
 async function confirmUndoCommit(commit) {
-  if (!confirm(`Undo commit ${commit.shortHash} ${commit.subject}?\n\n` +
-      "The commit disappears from the current branch but its changes stay in the working tree as uncommitted edits.")) return;
+  if (!(await confirmDialog(`Undo commit ${commit.shortHash}?`,
+      `${commit.subject}\n\n` +
+      "The commit disappears from the current branch but its changes stay in the working tree as uncommitted edits.",
+      { okLabel: "Undo" }))) return;
   await runHistoryAction("Undo commit", () => invoke("undo_commit"));
 }
 
 async function confirmDropCommit(commit) {
-  if (!confirm(`Drop commit ${commit.shortHash} ${commit.subject}?\n\n` +
-      "This rewrites this commit out of the current branch history (git rebase --onto)." +
-      "\nRequires a clean working tree; dropped commits stay reachable via reflog.")) return;
+  if (!(await confirmDialog(`Drop commit ${commit.shortHash}?`,
+      `${commit.subject}\n\n` +
+      "This rewrites this commit out of the current branch history (git rebase --onto).\n" +
+      "Requires a clean working tree; dropped commits stay reachable via reflog.",
+      { danger: true, okLabel: "Drop" }))) return;
   await runHistoryAction("Drop commit", () => invoke("drop_commit", { sha: commit.hash }));
 }
 
@@ -1526,11 +1559,11 @@ async function squashCommitFlow(commit) {
     return;
   }
   messageDialog(`Squash ${commit.shortHash} into its parent`, String(preview || "").trimEnd(), async (message) => {
-    if (!confirm(
-      `Squash ${commit.shortHash} (${commit.subject}) into its parent?\n\n` +
+    if (!(await confirmDialog(`Squash ${commit.shortHash} into its parent?`,
+      `${commit.subject}\n\n` +
       "The branch history is rewritten; descendant commits are replayed on top.\n" +
-      "A later push to the upstream will need a force push."
-    )) return;
+      "A later push to the upstream will need a force push.",
+      { danger: true, okLabel: "Squash" }))) return;
     await runHistoryAction(`Squash ${commit.shortHash}`, () =>
       invoke("squash_commit", { sha: commit.hash, message }));
   });
@@ -1562,7 +1595,9 @@ async function doReset(commit, mode) {
     hard: "\nAll uncommitted changes in index and working tree will be deleted!",
   };
   const label = { soft: "Soft reset", mixed: "Mixed reset", hard: "Hard reset" }[mode];
-  if (!confirm(`${label} current branch to ${commit.shortHash} (${commit.subject})?${warnings[mode]}`)) return;
+  if (!(await confirmDialog(label,
+      `Reset the current branch to ${commit.shortHash} (${commit.subject})?${warnings[mode]}`,
+      { danger: mode === "hard", okLabel: label }))) return;
   await runHistoryAction(label, () => invoke("reset_branch", { sha: commit.hash, mode }));
 }
 
@@ -1744,11 +1779,12 @@ function acceptAllMerge(choice) {
   renderMergeEditor();
 }
 
-function closeMergeEditor() {
+async function closeMergeEditor() {
   if ($("merge-dialog").classList.contains("hidden")) return;
   const unresolved = mergeUnresolved();
   if (unresolved > 0 &&
-      !confirm(`Leave the merge editor?\n\n${unresolved} conflict(s) unresolved — nothing has been written or staged yet.`)) {
+      !(await confirmDialog("Leave the merge editor?",
+        `${unresolved} conflict(s) unresolved — nothing has been written or staged yet.`))) {
     return;
   }
   hide($("merge-dialog"));
@@ -1780,9 +1816,10 @@ async function applyMergeResult() {
 
 async function doMergeIntoCurrent(name, noFF) {
   const target = `Merge branch '${name}'`;
-  if (!confirm(`Merge ${name} into the current branch?\n\n` +
+  if (!(await confirmDialog(`Merge ${name} into the current branch?`,
       "Merge conflicts appear under Local Changes → Conflicts; resolve them, stage and commit.\n" +
-      "You can abort the merge while resolving.")) return;
+      "You can abort the merge while resolving.",
+      { okLabel: "Merge" }))) return;
   setStatus("Merging…");
   try {
     const output = await invoke("merge_branch", { branch: name, noFF: Boolean(noFF) });
@@ -1802,7 +1839,9 @@ async function doMergeIntoCurrent(name, noFF) {
 
 async function deleteBranch(branch, force) {
   if (branch.remote) {
-    if (!confirm(`Delete remote branch ${branch.name}?\n\nThis runs git push --delete on the remote.`)) return;
+    if (!(await confirmDialog(`Delete remote branch ${branch.name}?`,
+        "This runs git push --delete on the remote.",
+        { danger: true, okLabel: "Delete" }))) return;
     await runAction(`Delete ${branch.name}`, () =>
       invoke("delete_remote_branch", { name: branch.name }));
     await refreshBranches();
@@ -1813,14 +1852,16 @@ async function deleteBranch(branch, force) {
     return;
   }
   const question = `Delete branch ${branch.name}?`;
-  if (!confirm(question)) return;
+  if (!(await confirmDialog(question, undefined, { danger: true, okLabel: "Delete" }))) return;
   try {
     const output = await invoke("delete_branch", { name: branch.name, force: Boolean(force) });
     setStatus(truncate(String(output || "Deleted"), 3));
   } catch (error) {
     const message = errorText(error);
     if (!force && message.includes("not fully merged")) {
-      if (confirm(`${branch.name} is not fully merged.\nDelete it anyway (force)?`)) {
+      if (await confirmDialog(`${branch.name} is not fully merged.`,
+          "Delete it anyway? Commits that only exist in this branch become unreachable from it (force delete).",
+          { danger: true, okLabel: "Force delete" })) {
         try {
           const output = await invoke("delete_branch", { name: branch.name, force: true });
           setStatus(truncate(String(output || "Deleted"), 3));
@@ -1912,7 +1953,7 @@ async function compareBranchFlow(branch) {
 
 async function openPushDialog() {
   const dialog = $("push-dialog");
-  $("push-remote").value = "origin";
+  $("push-remote").value = "";
   $("push-branch").value = "";
   $("push-force").checked = false;
   $("push-upstream").checked = false;
@@ -2065,7 +2106,9 @@ async function refreshRemotes() {
     remove.title = "Remove this remote";
     remove.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (!confirm(`Remove remote ${remote.name}?\n\nIts remote-tracking branches (origin/…) are removed too. The remote itself keeps its data.`)) return;
+      if (!(await confirmDialog(`Remove remote ${remote.name}?`,
+          "Its remote-tracking branches (origin/…) are removed too. The remote itself keeps its data.",
+          { danger: true, okLabel: "Remove" }))) return;
       await runAction(`Remove remote ${remote.name}`, () => invoke("remove_remote", { name: remote.name }), true, remove);
       await refreshRemotes();
     });
@@ -2135,7 +2178,8 @@ async function refreshTags() {
     deleteBtn.title = "Delete tag";
     deleteBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (!confirm(`Delete tag ${tag.name}?`)) return;
+      if (!(await confirmDialog(`Delete tag ${tag.name}?`, undefined,
+          { danger: true, okLabel: "Delete" }))) return;
       await runAction(`Delete tag ${tag.name}`, () => invoke("delete_tag", { name: tag.name }), true, deleteBtn);
       await refreshTags();
       await refreshLog(false);
@@ -2154,6 +2198,23 @@ async function refreshBranches() {
   renderBranchList($("remote-branches"), branches.remote);
 }
 
+/* Switch to a local branch. With uncommitted changes a prompt first warns
+   that git carries them over (or refuses on conflicting files). Returns
+   once the switch ran or was cancelled. */
+async function switchToBranch(branch) {
+  const status = state.loadedStatus;
+  const dirty = Boolean(status) &&
+    status.conflicts.length + status.staged.length + status.unstaged.length +
+      status.untracked.length > 0;
+  if (dirty) {
+    const ok = await confirmDialog(`Switch to ${branch.name}?`,
+      "You have uncommitted changes. Git will try to carry them over to the branch; files that conflict block the switch.",
+      { okLabel: "Switch" });
+    if (!ok) return;
+  }
+  await runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }));
+}
+
 function renderBranchList(container, branches) {
   container.replaceChildren();
   if (branches.length === 0) {
@@ -2164,6 +2225,7 @@ function renderBranchList(container, branches) {
     const row = el("div", "file-row");
     const marker = el("span", `file-kind ${branch.current ? "k-added" : ""}`, branch.current ? "●" : "○");
     const label = el("span", "file-path", branch.name);
+    if (!branch.current && !branch.remote) label.title = "Click to switch to this branch";
     row.append(marker, label);
     const info = [];
     if (branch.upstream) info.push(branch.upstream);
@@ -2174,29 +2236,22 @@ function renderBranchList(container, branches) {
       row.append(el("span", "commit-meta", info.join(" ")));
     }
     if (!branch.current && !branch.remote) {
-      const action = el("span", "file-action", "switch");
-      action.addEventListener("click", (event) => {
-        event.stopPropagation();
-        runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }), true, action)
-          .then(() => hide($('branch-menu')));
-      });
-      row.append(action);
+      row.classList.add("switchable");
     } else if (branch.remote) {
       action2(row, branch);
     }
-    row.addEventListener("click", () => {
-      if (!branch.current && !branch.remote) {
-        void guardButton(row, () =>
-          runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name })))
-          .then(() => hide($('branch-menu')));
-      }
+    row.addEventListener("click", async () => {
+      if (branch.current || branch.remote) return;
+      hide($("branch-menu"));
+      await switchToBranch(branch);
     });
     row.addEventListener("contextmenu", (event) => {
       const items = [{ head: branch.name }];
       if (!branch.current && !branch.remote) {
-        items.push({ label: `Switch to ${branch.name}`, hint: branch.hash, run: () =>
-          runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }))
-            .then(() => hide($("branch-menu"))) });
+        items.push({ label: `Switch to ${branch.name}`, hint: branch.hash, run: async () => {
+          hide($("branch-menu"));
+          await switchToBranch(branch);
+        } });
         items.push({ label: "Merge into Current", run: () => {
           hide($("branch-menu"));
           void doMergeIntoCurrent(branch.name, false);
@@ -2479,6 +2534,17 @@ function boot() {
     if (event.key === "Enter") {
       const handler = promptHandler;
       if (handler) void guardButton($("prompt-ok"), handler);
+    }
+  });
+
+  /* confirmation dialog */
+  $("confirm-cancel").addEventListener("click", () => resolveConfirm(false));
+  $("confirm-ok").addEventListener("click", () => resolveConfirm(true));
+  document.addEventListener("keydown", (event) => {
+    if ($("confirm-dialog").classList.contains("hidden")) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      resolveConfirm(true);
     }
   });
 

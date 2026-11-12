@@ -92,6 +92,8 @@ html, body {
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.primary { background: var(--accent); border-color: var(--accent-dim); color: #fff; }
 .btn.primary:hover { background: var(--accent-dim); }
+.btn.danger { background: var(--deleted); border-color: var(--deleted); color: #fff; }
+.btn.danger:hover { background: #d64352; border-color: #d64352; }
 .btn.small { padding: 2px 8px; font-size: 12px; }
 
 /* ---------- in-flight actions ---------- */
@@ -305,6 +307,8 @@ body.resizing { cursor: col-resize; user-select: none; }
    beside the first one at the right edge instead of splitting the free
    space with its own auto margin. */
 .file-action + .file-action { margin-left: 0; }
+/* Branch rows switch on click; the name hints the affordance on hover. */
+.file-row.switchable .file-path:hover { color: var(--accent); }
 
 /* Remotes dialog rows */
 .remote-url {
@@ -549,6 +553,28 @@ body.resizing { cursor: col-resize; user-select: none; }
   gap: 8px;
 }
 .dialog-title { font-weight: 600; font-size: 14px; }
+.dialog-head { display: flex; align-items: center; gap: 10px; }
+.dialog-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  font-size: 14px;
+  color: var(--accent);
+  background: rgba(53, 116, 240, 0.14);
+}
+.dialog-icon.danger { color: var(--deleted); background: var(--deleted-bg); }
+.dialog-message {
+  margin: 0;
+  white-space: pre-line;
+  line-height: 1.55;
+  color: var(--text);
+}
+.dialog-message:empty { display: none; }
+.confirm-card { width: 440px; }
 .dialog-checks { display: flex; gap: 16px; color: var(--muted); }
 .dialog-checks label { display: flex; align-items: center; gap: 5px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
