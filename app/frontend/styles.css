@@ -94,6 +94,31 @@ html, body {
 .btn.primary:hover { background: var(--accent-dim); }
 .btn.small { padding: 2px 8px; font-size: 12px; }
 
+/* ---------- in-flight actions ---------- */
+
+/* Applied to the pressed control while its async work runs (guardButton):
+   dimmed, wait cursor, and a small spinner for .btn. Native clicks already
+   stop on disabled buttons; the .busy class also covers span actions. */
+.busy { opacity: 0.5; cursor: wait; }
+.btn.busy { cursor: wait; padding-right: 26px; position: relative; }
+.btn.busy::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin-top: -5px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: jet-spin 0.7s linear infinite;
+}
+.btn.small.busy { padding-right: 22px; }
+.btn.small.busy::after { right: 6px; width: 7px; height: 7px; margin-top: -4px; }
+.file-action.busy { opacity: 0.5; }
+@keyframes jet-spin { to { transform: rotate(360deg); } }
+
 .branch-button { font-weight: 600; }
 .branch-ico { color: var(--accent); margin-right: 4px; }
 
@@ -192,6 +217,19 @@ html, body {
 /* ---------- work area ---------- */
 .work-area { display: flex; flex: 1; min-height: 0; }
 
+/* ---------- resizable left panel ---------- */
+
+.panel-resizer {
+  width: 6px;
+  flex: none;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 5;
+}
+.panel-resizer:hover,
+.panel-resizer.dragging { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+
 .changes-panel {
   width: 340px;
   min-width: 260px;
@@ -259,6 +297,10 @@ html, body {
   flex: none;
 }
 .file-action:hover { color: var(--text); border-color: var(--border); background: var(--panel-alt); }
+/* A second action on the same row (rollback next to stage/unstage) sits
+   beside the first one at the right edge instead of splitting the free
+   space with its own auto margin. */
+.file-action + .file-action { margin-left: 0; }
 
 /* Remotes dialog rows */
 .remote-url {
@@ -366,7 +408,7 @@ html, body {
 .commit-row { display: flex; align-items: center; cursor: pointer; height: 24px; }
 .commit-row:hover { background: var(--hover); }
 .commit-row.selected { background: var(--selected); }
-.graph-cell { width: 120px; flex: none; }
+.graph-cell { flex: none; }
 .commit-sha { color: var(--accent); flex: none; padding-right: 8px; }
 .commit-refs { display: inline-flex; gap: 4px; margin-right: 6px; flex: none; }
 .ref-badge {

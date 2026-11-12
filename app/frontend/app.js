@@ -86,6 +86,8 @@ const LANE_COLORS = [
   "#3574f0", "#499c54", "#dcb167", "#d570b6",
   "#6a9dc5", "#c9684d", "#8a7ce0", "#4aa9a4",
 ];
+/* Horizontal distance between two graph lanes (px). */
+const LANE_W = 14;
 
 /* ------------------------------------------------------------------ state */
 
@@ -149,18 +151,34 @@ function truncate(text, limit = 600) {
   return lines.slice(0, limit).join("\n") + `\n… (+${lines.length - limit} more lines)`;
 }
 
-async function runAction(label, fn, refreshAfter = true) {
+/* Disable a button while its async work is in flight so repeated clicks
+   are no-ops. The button always re-enables, even when the work throws. */
+async function guardButton(btn, fn) {
+  if (!btn || btn.disabled) return undefined;
+  btn.disabled = true;
+  btn.classList.add("busy");
   try {
-    setStatus(`${label}…`);
-    const output = await fn();
-    setStatus(truncate(String(output || `${label} done`).trim(), 3));
-    if (refreshAfter) {
-      await Promise.all([refreshStatus(), refreshLog(), refreshBranches()]);
-      await loadDiff().catch(() => {});
-    }
-  } catch (error) {
-    setStatus(`${label} failed: ${errorText(error)}`, true);
+    return await fn();
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
   }
+}
+
+async function runAction(label, fn, refreshAfter = true, btn = null) {
+  return guardButton(btn, async () => {
+    try {
+      setStatus(`${label}…`);
+      const output = await fn();
+      setStatus(truncate(String(output || `${label} done`).trim(), 3));
+      if (refreshAfter) {
+        await Promise.all([refreshStatus(), refreshLog(), refreshBranches()]);
+        await loadDiff().catch(() => {});
+      }
+    } catch (error) {
+      setStatus(`${label} failed: ${errorText(error)}`, true);
+    }
+  });
 }
 
 function errorText(error) {
@@ -418,7 +436,7 @@ function fileRow(entry, section, onSelect) {
   action.addEventListener("click", (event) => {
     event.stopPropagation();
     const command = section === "staged" ? "unstage" : "stage";
-    runAction(action.title, () => invoke(command, { paths: [entry.path] }));
+    runAction(action.title, () => invoke(command, { paths: [entry.path] }), true, action);
   });
   row.append(kind, path, action);
   if (ROLLBACK_LABEL[section]) row.append(rollbackButton(entry, section));
@@ -434,7 +452,7 @@ function rollbackButton(entry, section) {
   button.title = ROLLBACK_LABEL[section];
   button.addEventListener("click", (event) => {
     event.stopPropagation();
-    void rollbackFiles([entry.path], section, entry.displayPath);
+    void guardButton(button, () => rollbackFiles([entry.path], section, entry.displayPath));
   });
   return button;
 }
@@ -671,7 +689,7 @@ function rows() {
         const btn = el("button", "btn small", "Abort merge");
         btn.addEventListener("click", () => {
           if (!confirm("Abort the merge?\n\nThe pre-merge state will be restored.")) return;
-          void runAction("Abort merge", () => invoke("merge_abort"));
+          void runAction("Abort merge", () => invoke("merge_abort"), true, btn);
         });
         return btn;
       })()
@@ -699,7 +717,7 @@ function rows() {
       const command = title === "Staged" ? "unstage" : "stage";
       const label = title === "Staged" ? "Unstage all" : "Stage all";
       button.addEventListener("click", () =>
-        runAction(label, () => invoke(command, { paths: files.map((f) => f.path) }))
+        runAction(label, () => invoke(command, { paths: files.map((f) => f.path) }), true, button)
       );
     } else {
       hide(button);
@@ -868,7 +886,8 @@ function renderDiff(text) {
       const rollback = el("button", "btn small diff-rollback", "Rollback file");
       rollback.title = ROLLBACK_LABEL[target] || "Rollback";
       rollback.addEventListener("click", () =>
-        rollbackFiles([state.selectedFile.entry.path], target, state.selectedFile.entry.displayPath)
+        void guardButton(rollback, () =>
+          rollbackFiles([state.selectedFile.entry.path], target, state.selectedFile.entry.displayPath))
       );
       head.append(rollback);
     }
@@ -883,7 +902,7 @@ function renderDiff(text) {
           target === "staged"
             ? "Rollback hunk (unstage these changes)"
             : "Rollback hunk (discard these working tree changes)";
-        rollback.addEventListener("click", () => void rollbackHunk(file, chunk));
+        rollback.addEventListener("click", () => void guardButton(rollback, () => rollbackHunk(file, chunk)));
         hunkHead.append(rollback);
       }
       card.append(hunkHead);
@@ -1151,7 +1170,15 @@ function renderLog(commits, from = 0) {
     list.append(el("div", "no-commits", "No commits yet — make your first commit from Local Changes."));
     return;
   }
-  const graph = computeGraph(commits);
+  const { rows: graph, maxLanes } = computeGraph(commits);
+  const graphWidth = Math.max((maxLanes + 1) * LANE_W, LANE_W * 2);
+  if (from > 0 && state.graphWidth !== graphWidth) {
+    // The appended rows need more lanes than the ones already drawn —
+    // redraw everything so the graph columns stay aligned.
+    list.replaceChildren();
+    from = 0;
+  }
+  state.graphWidth = graphWidth;
   const fragment = document.createDocumentFragment();
   for (let index = from; index < commits.length; index++) {
     const commit = commits[index];
@@ -1159,7 +1186,8 @@ function renderLog(commits, from = 0) {
     const node = el("div", "commit-row");
 
     const cell = el("span", "graph-cell");
-    cell.append(drawGraphCell(row, index));
+    cell.style.width = graphWidth + "px";
+    cell.append(drawGraphCell(row, graphWidth));
     node.append(cell);
 
     const sha = el("span", "commit-sha", commit.shortHash);
@@ -1270,11 +1298,9 @@ function prettyRef(ref) {
   return ref.startsWith("tag:") ? ref.slice(4).trim() : ref;
 }
 
-function drawGraphCell(row, index) {
-  const LANE_W = 14;
+function drawGraphCell(row, width) {
   const CELL_H = 24;
   const RADIUS = 4;
-  const width = Math.max(120, (row.lanesUsed + 1) * LANE_W);
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("width", width);
   svg.setAttribute("height", CELL_H);
@@ -1286,8 +1312,13 @@ function drawGraphCell(row, index) {
   for (const lane of row.through) drawLine(svg, cx(lane), 0, cx(lane), CELL_H, row.colorOf(lane));
   // Incoming edges that converge into the node from other lanes.
   for (const from of row.incoming) {
-    if (from === row.node) continue;
-    drawCurve(svg, cx(from), 0, cx(row.node), CELL_H / 2, row.colorOf(row.node));
+    if (from === row.node) {
+      // The edge to the parent below runs in the node's own lane: draw the
+      // segment above the dot so the line is continuous through the row.
+      drawLine(svg, cx(row.node), 0, cx(row.node), CELL_H / 2, row.colorOf(row.node));
+    } else {
+      drawCurve(svg, cx(from), 0, cx(row.node), CELL_H / 2, row.colorOf(row.node));
+    }
   }
   // Outgoing edges to parents below.
   for (const to of row.outgoing) {
@@ -1373,7 +1404,8 @@ function computeGraph(commits) {
     const taken = new Set(open.map((edge) => edge.lane));
     for (let lane = 0; ; lane++) if (!taken.has(lane)) return lane;
   }
-  return rows;
+  const maxLanes = rows.reduce((max, row) => Math.max(max, row.lanesUsed), 0);
+  return { rows, maxLanes };
 }
 
 /* ------------------------------------------------------- history actions */
@@ -1647,7 +1679,7 @@ function mergeLine(num, text, cls) {
 
 function mergeButton(label, run) {
   const button = el("button", "btn small", label);
-  button.addEventListener("click", run);
+  button.addEventListener("click", () => void guardButton(button, run));
   return button;
 }
 
@@ -2030,7 +2062,7 @@ async function refreshRemotes() {
     fetchOne.title = `Fetch ${remote.name}`;
     fetchOne.addEventListener("click", (event) => {
       event.stopPropagation();
-      void runAction(`Fetch ${remote.name}`, () => invoke("fetch_remote", { name: remote.name }));
+      void runAction(`Fetch ${remote.name}`, () => invoke("fetch_remote", { name: remote.name }), true, fetchOne);
     });
 
     const remove = el("span", "file-action", "delete");
@@ -2038,7 +2070,7 @@ async function refreshRemotes() {
     remove.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (!confirm(`Remove remote ${remote.name}?\n\nIts remote-tracking branches (origin/…) are removed too. The remote itself keeps its data.`)) return;
-      await runAction(`Remove remote ${remote.name}`, () => invoke("remove_remote", { name: remote.name }));
+      await runAction(`Remove remote ${remote.name}`, () => invoke("remove_remote", { name: remote.name }), true, remove);
       await refreshRemotes();
     });
 
@@ -2108,7 +2140,7 @@ async function refreshTags() {
     deleteBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (!confirm(`Delete tag ${tag.name}?`)) return;
-      await runAction(`Delete tag ${tag.name}`, () => invoke("delete_tag", { name: tag.name }));
+      await runAction(`Delete tag ${tag.name}`, () => invoke("delete_tag", { name: tag.name }), true, deleteBtn);
       await refreshTags();
       await refreshLog(false);
     });
@@ -2149,7 +2181,7 @@ function renderBranchList(container, branches) {
       const action = el("span", "file-action", "switch");
       action.addEventListener("click", (event) => {
         event.stopPropagation();
-        runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }))
+        runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }), true, action)
           .then(() => hide($('branch-menu')));
       });
       row.append(action);
@@ -2158,7 +2190,8 @@ function renderBranchList(container, branches) {
     }
     row.addEventListener("click", () => {
       if (!branch.current && !branch.remote) {
-        runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }))
+        void guardButton(row, () =>
+          runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name })))
           .then(() => hide($('branch-menu')));
       }
     });
@@ -2304,7 +2337,7 @@ async function refreshStashes() {
       btn.addEventListener("click", (event) => {
         event.stopPropagation();
         runAction(`Stash ${name}`, () =>
-          invoke("stash_apply", { action: name, selector: stash.selector })
+          invoke("stash_apply", { action: name, selector: stash.selector }), true, btn
         );
       });
       wrap.append(btn);
@@ -2376,21 +2409,21 @@ function boot() {
     if (event.key === "Enter") $("open-path-btn").click();
   });
 
-  $("refresh-btn").addEventListener("click", refreshAll);
+  $("refresh-btn").addEventListener("click", () => void guardButton($("refresh-btn"), refreshAll));
   $("switch-repo-btn").addEventListener("click", () =>
-    runAction("Close", () => invoke("close_repository"), false).then(leaveApp.bind(null, ""))
+    runAction("Close", () => invoke("close_repository"), false, $("switch-repo-btn")).then(leaveApp.bind(null, ""))
   );
 
   $("fetch-btn").addEventListener("click", () =>
-    runAction("Fetch", () => invoke("fetch", { all: true }))
+    runAction("Fetch", () => invoke("fetch", { all: true }), true, $("fetch-btn"))
   );
   $("pull-btn").addEventListener("click", openPullDialog);
   $("push-btn").addEventListener("click", openPushDialog);
 
   $("pull-cancel").addEventListener("click", () => hide($("pull-dialog")));
-  $("pull-ok").addEventListener("click", submitPullDialog);
+  $("pull-ok").addEventListener("click", () => void guardButton($("pull-ok"), submitPullDialog));
   $("push-cancel").addEventListener("click", () => hide($("push-dialog")));
-  $("push-ok").addEventListener("click", submitPushDialog);
+  $("push-ok").addEventListener("click", () => void guardButton($("push-ok"), submitPushDialog));
   $("compare-close").addEventListener("click", () => hide($("compare-dialog")));
   $("prompt-cancel").addEventListener("click", () => hide($("prompt-dialog")));
 
@@ -2407,7 +2440,7 @@ function boot() {
   $("oplog-btn").addEventListener("click", () => void openOpLog());
   $("oplog-close").addEventListener("click", () => hide($("oplog-dialog")));
   $("oplog-clear").addEventListener("click", () => void clearOpLog());
-  $("remote-add").addEventListener("click", () => void submitAddRemote());
+  $("remote-add").addEventListener("click", () => void guardButton($("remote-add"), submitAddRemote));
   for (const id of ["remote-name", "remote-url"]) {
     $(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") $("remote-add").click();
@@ -2418,12 +2451,12 @@ function boot() {
   $("message-cancel").addEventListener("click", () => hide($("message-dialog")));
   $("message-ok").addEventListener("click", () => {
     const handler = messageHandler;
-    if (handler) handler();
+    if (handler) void guardButton($("message-ok"), handler);
   });
   $("message-input").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       const handler = messageHandler;
-      if (handler) handler();
+      if (handler) void guardButton($("message-ok"), handler);
     }
   });
 
@@ -2439,17 +2472,17 @@ function boot() {
 
   /* merge editor */
   $("merge-cancel").addEventListener("click", closeMergeEditor);
-  $("merge-apply").addEventListener("click", () => void applyMergeResult());
-  $("merge-all-ours").addEventListener("click", () => acceptAllMerge("ours"));
-  $("merge-all-theirs").addEventListener("click", () => acceptAllMerge("theirs"));
+  $("merge-apply").addEventListener("click", () => void guardButton($("merge-apply"), applyMergeResult));
+  $("merge-all-ours").addEventListener("click", () => void guardButton($("merge-all-ours"), () => acceptAllMerge("ours")));
+  $("merge-all-theirs").addEventListener("click", () => void guardButton($("merge-all-theirs"), () => acceptAllMerge("theirs")));
   $("prompt-ok").addEventListener("click", () => {
     const handler = promptHandler;
-    if (handler) handler();
+    if (handler) void guardButton($("prompt-ok"), handler);
   });
   $("prompt-input").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       const handler = promptHandler;
-      if (handler) handler();
+      if (handler) void guardButton($("prompt-ok"), handler);
     }
   });
 
@@ -2475,7 +2508,7 @@ function boot() {
       return;
     }
     const rev = $("tag-rev").value.trim() || null;
-    runAction(`Tag ${name}`, () => invoke("create_tag", { name, rev })).then(() => {
+    runAction(`Tag ${name}`, () => invoke("create_tag", { name, rev }), true, $("tag-create-btn")).then(() => {
       $("tag-name").value = "";
       $("tag-rev").value = "";
       refreshTags();
@@ -2489,7 +2522,7 @@ function boot() {
     if (event.key === "Enter") $("tag-create-btn").click();
   });
   $("tag-push-btn").addEventListener("click", () =>
-    runAction("Push tags", () => invoke("push_tags"))
+    runAction("Push tags", () => invoke("push_tags"), true, $("tag-push-btn"))
   );
 
   /* Log filter inputs */
@@ -2562,7 +2595,7 @@ function boot() {
   $("create-branch-btn").addEventListener("click", async () => {
     const name = $("new-branch-name").value.trim();
     if (!name) return;
-    await runAction(`New branch ${name}`, () => invoke("create_branch", { name }));
+    await runAction(`New branch ${name}`, () => invoke("create_branch", { name }), true, $("create-branch-btn"));
     $("new-branch-name").value = "";
     hide($("branch-menu"));
   });
@@ -2581,7 +2614,7 @@ function boot() {
   });
   $("stash-push-btn").addEventListener("click", () => {
     const message = $("stash-message").value.trim();
-    runAction("Stash push", () => invoke("stash_push", { message })).then(() => {
+    runAction("Stash push", () => invoke("stash_push", { message }), true, $("stash-push-btn")).then(() => {
       $("stash-message").value = "";
     });
   });
@@ -2593,7 +2626,7 @@ function boot() {
       return;
     }
     const amend = $("amend-check").checked;
-    runAction("Commit", () => invoke("commit", { message, amend })).then(() => {
+    runAction("Commit", () => invoke("commit", { message, amend }), true, $("commit-btn")).then(() => {
       if (!$("status-text").parentElement.classList.contains("error")) {
         $("commit-message").value = "";
         hide($("stash-menu"));
@@ -2624,7 +2657,7 @@ function boot() {
     state.logAll = event.target.checked;
     refreshLog(true);
   });
-  $("load-more-btn").addEventListener("click", loadMore);
+  $("load-more-btn").addEventListener("click", () => void guardButton($("load-more-btn"), loadMore));
 
   // Apply the persisted diff layout before the first render.
   {
@@ -2635,7 +2668,7 @@ function boot() {
   }
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "F5") refreshAll();
+    if (event.key === "F5") void guardButton($("refresh-btn"), refreshAll);
     if (event.key === "Escape") closeDialogs();
   });
 
@@ -2655,6 +2688,38 @@ function boot() {
   window.addEventListener("focus", () => {
     if (state.root) refreshStatus().catch(() => {});
   });
+
+  /* Resizable left panel: drag the divider, remember the width. */
+  const resizer = $("panel-resizer");
+  const changesPanel = document.querySelector(".changes-panel");
+  const PANEL_MIN = 260;
+  const panelMax = () => Math.max(PANEL_MIN, window.innerWidth - 420);
+  const savedWidth = Number(localStorage.getItem("gitjet.changesWidth"));
+  if (savedWidth >= PANEL_MIN && savedWidth <= panelMax()) {
+    changesPanel.style.width = savedWidth + "px";
+  }
+  let panelDrag = null;
+  resizer.addEventListener("pointerdown", (event) => {
+    panelDrag = { startX: event.clientX, startWidth: changesPanel.getBoundingClientRect().width };
+    resizer.setPointerCapture(event.pointerId);
+    resizer.classList.add("dragging");
+    document.body.classList.add("resizing");
+  });
+  resizer.addEventListener("pointermove", (event) => {
+    if (!panelDrag) return;
+    const width = Math.min(panelMax(), Math.max(PANEL_MIN, panelDrag.startWidth + event.clientX - panelDrag.startX));
+    changesPanel.style.width = width + "px";
+  });
+  const endPanelDrag = (event) => {
+    if (!panelDrag) return;
+    panelDrag = null;
+    resizer.releasePointerCapture(event.pointerId);
+    resizer.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    localStorage.setItem("gitjet.changesWidth", String(changesPanel.getBoundingClientRect().width));
+  };
+  resizer.addEventListener("pointerup", endPanelDrag);
+  resizer.addEventListener("pointercancel", endPanelDrag);
 
 
   renderRecent();
