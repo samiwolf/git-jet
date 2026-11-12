@@ -273,6 +273,10 @@ body.resizing { cursor: col-resize; user-select: none; }
   letter-spacing: 0.5px;
 }
 .changes-section-head .btn { margin-left: auto; padding: 1px 6px; font-size: 11px; }
+.changes-section-head.staged { color: var(--added); }
+.changes-section-head.unstaged { color: var(--modified); }
+.changes-section-head.untracked { color: var(--untracked); }
+.changes-section-head.conflict { color: var(--conflict); }
 
 .file-row {
   display: flex;

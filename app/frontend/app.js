@@ -711,7 +711,7 @@ function rows() {
   for (const [title, files, section] of sections) {
     if (title === "Conflicts" || files.length > 0) anyShown = true;
 
-    const head = el("div", "changes-section-head", `${title} (${files.length})`);
+    const head = el("div", `changes-section-head ${section}`, `${title} (${files.length})`);
     const button = el("button", "btn", title === "Staged" ? "unstage all" : "stage all");
     if (files.length > 0) {
       const command = title === "Staged" ? "unstage" : "stage";
@@ -726,31 +726,27 @@ function rows() {
     head.addEventListener("contextmenu", (event) => showSectionContextMenu(event, title, section, files));
     list.append(head);
 
-    if (files.length === 0) {
-      list.append(el("div", "empty-hint", title === "Staged" ? "Nothing staged" : "Nothing here"));
-    } else {
-      for (const entry of files) {
-        const row = fileRow(entry, section, (node) => {
-          list.querySelectorAll(".file-row.selected").forEach((n) => n.classList.remove("selected"));
-          node.classList.add("selected");
-          state.selectedFile = { entry, section };
-          state.selectedCommit = null;
-          if (section === "conflict") {
-            openMergeEditor(entry);
-            return;
-          }
-          switchTab("diff");
-          loadDiff();
-        });
-        if (
-          state.selectedFile &&
-          state.selectedFile.section === section &&
-          state.selectedFile.entry.path === entry.path
-        ) {
-          row.classList.add("selected");
+    for (const entry of files) {
+      const row = fileRow(entry, section, (node) => {
+        list.querySelectorAll(".file-row.selected").forEach((n) => n.classList.remove("selected"));
+        node.classList.add("selected");
+        state.selectedFile = { entry, section };
+        state.selectedCommit = null;
+        if (section === "conflict") {
+          openMergeEditor(entry);
+          return;
         }
-        list.append(row);
+        switchTab("diff");
+        loadDiff();
+      });
+      if (
+        state.selectedFile &&
+        state.selectedFile.section === section &&
+        state.selectedFile.entry.path === entry.path
+      ) {
+        row.classList.add("selected");
       }
+      list.append(row);
     }
   }
 
