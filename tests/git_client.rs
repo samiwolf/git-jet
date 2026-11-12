@@ -1079,6 +1079,47 @@ fn delete_remote_branch_removes_it_on_the_remote() {
 }
 
 #[test]
+fn remote_branches_can_be_checked_out() {
+    let (_holder, holder) = clone_of_bare_remote();
+    let worktree = holder.path().join("worktree");
+    test_git_config(&worktree);
+    let mut client = GitClient::new(
+        StdExecutor,
+        worktree.to_str().unwrap().to_string(),
+    );
+
+    write(&worktree, "a.txt", "one\n");
+    git(&worktree, &["add", "--all"]);
+    git(&worktree, &["commit", "-q", "-m", "initial"]);
+    client.push().unwrap();
+
+    // Publish a remote branch, then leave it.
+    git(&worktree, &["switch", "-q", "-c", "topic"]);
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "topic work"]);
+    client
+        .push_with_options(Some("origin"), Some("topic"), false, true)
+        .unwrap();
+    git(&worktree, &["switch", "-q", "main"]);
+
+    // Checking out the remote branch creates a local tracking branch.
+    client.checkout_remote_branch("origin/topic").unwrap();
+    let heads = git(&worktree, &["branch", "--format=%(HEAD)|%(refname:short)"]);
+    assert!(heads.contains("*|topic"), "{heads}");
+    let tracking =
+        git(&worktree, &["branch", "--format=%(refname:short)|%(upstream:short)"]);
+    assert!(tracking.contains("topic|origin/topic"), "{tracking}");
+
+    // With the local branch already present it is just switched to.
+    git(&worktree, &["switch", "-q", "main"]);
+    client.checkout_remote_branch("origin/topic").unwrap();
+    let heads = git(&worktree, &["branch", "--format=%(HEAD)|%(refname:short)"]);
+    assert!(heads.contains("*|topic"), "{heads}");
+
+    // Bare names are rejected.
+    assert!(client.checkout_remote_branch("main").is_err());
+}
+
+#[test]
 fn remotes_can_be_added_edited_removed_and_fetched() {
     let dir = init_repo();
     let mut client = client(&dir);

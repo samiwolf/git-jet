@@ -104,6 +104,7 @@ const state = {
   diffMode: "all",
   diffLayout: localStorage.getItem("gitjet.diffLayout") || "unified",
   logFilters: { text: "", author: "", path: "" },
+  branchCache: null,   // last get_branches result for the search filter
   commitDetail: null,   // last loaded CommitDetail DTO
   loadedStatus: null,
   mergeFile: null,      // conflict entry open in the merge editor
@@ -1569,6 +1570,28 @@ function promptDialog(title, placeholder, initial, mode, onSubmit) {
    the next conflicting commit is not a failure — a multi-commit rebase
    stops once per conflict — so it is reported as progress and the views
    refresh, bringing the banner back with the new conflict list. */
+async function continueOperation(label, command, btn) {
+  await guardButton(btn, async () => {
+    let failure = null;
+    try {
+      setStatus(`${label}…`);
+      const output = await invoke(command);
+      setStatus(truncate(String(output || `${label} done`).trim(), 3));
+    } catch (error) {
+      const message = errorText(error);
+      if (/could not apply|could not revert|CONFLICT/.test(message)) {
+        // The operation stopped on the next conflicting commit: the refresh
+        // below re-renders the banner with the new conflict list.
+        setStatus(truncate(message, 6));
+      } else {
+        failure = `${label} failed: ${message}`;
+      }
+    }
+    await Promise.all([refreshStatus(), refreshLog(), refreshBranches()]);
+    if (failure) setStatus(failure, true);
+  });
+}
+
 function closeDialogs() {
   // A pending confirmation counts as cancelled (same as the native confirm).
   resolveConfirm(false);
@@ -2553,9 +2576,19 @@ async function refreshTags() {
 
 async function refreshBranches() {
   if (!state.root) return;
-  const branches = await invoke("get_branches");
-  renderBranchList($("local-branches"), branches.local);
-  renderBranchList($("remote-branches"), branches.remote);
+  state.branchCache = await invoke("get_branches");
+  renderBranchLists();
+}
+
+/* Re-renders both branch lists from the cached get_branches result, filtered
+   by the menu's search box (case-insensitive substring). Typing re-renders
+   without touching the backend again. */
+function renderBranchLists() {
+  const query = $("branch-search").value.trim().toLowerCase();
+  const cache = state.branchCache || { local: [], remote: [] };
+  const match = (branch) => !query || branch.name.toLowerCase().includes(query);
+  renderBranchList($("local-branches"), cache.local.filter(match), Boolean(query));
+  renderBranchList($("remote-branches"), cache.remote.filter(match), Boolean(query));
 }
 
 /* Switch to a local branch. With uncommitted changes a prompt first warns
@@ -2575,10 +2608,28 @@ async function switchToBranch(branch) {
   await runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }));
 }
 
-function renderBranchList(container, branches) {
+/* Check out a remote branch, WebStorm-style: an existing local branch with
+   the same name is switched to, otherwise a new local branch tracking the
+   remote one is created. */
+async function checkoutRemoteBranch(branch) {
+  const status = state.loadedStatus;
+  const dirty = Boolean(status) &&
+    status.conflicts.length + status.staged.length + status.unstaged.length +
+      status.untracked.length > 0;
+  if (dirty) {
+    const ok = await confirmDialog(`Check out ${branch.name}?`,
+      "You have uncommitted changes. Git will try to carry them over; files that conflict block the checkout.",
+      { okLabel: "Check out" });
+    if (!ok) return;
+  }
+  await runAction(`Checkout ${branch.name}`, () =>
+    invoke("checkout_remote_branch", { name: branch.name }));
+}
+
+function renderBranchList(container, branches, filtering = false) {
   container.replaceChildren();
   if (branches.length === 0) {
-    container.append(el("div", "empty-hint", "none"));
+    container.append(el("div", "empty-hint", filtering ? "No matching branches" : "none"));
     return;
   }
   for (const branch of branches) {
@@ -2586,6 +2637,7 @@ function renderBranchList(container, branches) {
     const marker = el("span", `file-kind ${branch.current ? "k-added" : ""}`, branch.current ? "●" : "○");
     const label = el("span", "file-path", branch.name);
     if (!branch.current && !branch.remote) label.title = "Click to switch to this branch";
+    if (branch.remote) label.title = "Click to check out this remote branch";
     row.append(marker, label);
     const info = [];
     if (branch.upstream) info.push(branch.upstream);
@@ -2598,11 +2650,15 @@ function renderBranchList(container, branches) {
     if (!branch.current && !branch.remote) {
       row.classList.add("switchable");
     } else if (branch.remote) {
-      // action2(row, branch);
+      row.classList.add("switchable");
     }
     row.addEventListener("click", async () => {
-      if (branch.current || branch.remote) return;
+      if (branch.current) return;
       hide($("branch-menu"));
+      if (branch.remote) {
+        await checkoutRemoteBranch(branch);
+        return;
+      }
       await switchToBranch(branch);
     });
     row.addEventListener("contextmenu", (event) => {
@@ -2638,6 +2694,10 @@ function renderBranchList(container, branches) {
         } });
       }
       if (branch.remote) {
+        items.push({ label: `Checkout ${branch.name}`, hint: "creates a local branch if needed", run: async () => {
+          hide($("branch-menu"));
+          await checkoutRemoteBranch(branch);
+        } });
         items.push({ label: "Checkout as New Local Branch…", run: () => {
           hide($("branch-menu"));
           void newBranchFrom(branch);
@@ -3082,7 +3142,10 @@ function boot() {
       const rect = button.getBoundingClientRect();
       menu.style.left = rect.left + "px";
       menu.style.top = rect.bottom + 4 + "px";
+      // Start each open with the full list and a focused search box.
+      $("branch-search").value = "";
       show(menu);
+      $("branch-search").focus();
     });
   });
   document.addEventListener("click", (event) => {
@@ -3117,15 +3180,21 @@ function boot() {
     }
   });
 
-  $("create-branch-btn").addEventListener("click", async () => {
-    const name = $("new-branch-name").value.trim();
-    if (!name) return;
-    await runAction(`New branch ${name}`, () => invoke("create_branch", { name }), true, $("create-branch-btn"));
-    $("new-branch-name").value = "";
-    hide($("branch-menu"));
+  /* The menu's input is a search box: typing filters both branch lists live.
+     New branches are created from the stylized prompt dialog via ＋ New. */
+  $("branch-search").addEventListener("input", renderBranchLists);
+  $("branch-search").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide($("branch-menu"));
   });
-  $("new-branch-name").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") $("create-branch-btn").click();
+  $("new-branch-btn").addEventListener("click", () => {
+    // Seed the prompt with the search text so filtering then ＋ New flows
+    // straight into creating the typed name.
+    const suggested = $("branch-search").value.trim();
+    hide($("branch-menu"));
+    promptDialog("New branch", "Branch name, e.g. feature/login", suggested, "", async (name) => {
+      await runAction(`New branch ${name}`, () => invoke("create_branch", { name }));
+      await refreshBranches();
+    });
   });
 
   $("stash-button").addEventListener("click", async () => {
@@ -3191,6 +3260,18 @@ function boot() {
       n.classList.toggle("active", n.dataset.layout === state.diffLayout)
     );
   }
+
+  /* Swallow WebView2's page-reload accelerators (F5 / Ctrl+R) before the
+     browser acts on them: this is a desktop app and a stray refresh would
+     wipe in-memory state. F5 stays wired to the in-app refresh below.
+     Devtools are turned off natively in main.rs, so F12 needs no guard. */
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "F5" ||
+        (event.ctrlKey && !event.shiftKey && !event.altKey &&
+         (event.key === "r" || event.key === "R"))) {
+      event.preventDefault();
+    }
+  }, true);
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "F5") void guardButton($("refresh-btn"), refreshAll);

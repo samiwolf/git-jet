@@ -526,6 +526,18 @@ async fn switch_branch(branch: Option<String>, state: State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
+async fn checkout_remote_branch(
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let name = name.ok_or_else(|| "A remote branch name is required.".to_string())?;
+    if name.trim().is_empty() {
+        return Err("Remote branch name is empty.".to_string());
+    }
+    with_engine(&state, move |client| client.checkout_remote_branch(&name)).await
+}
+
+#[tauri::command]
 async fn create_branch(name: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let name = name.ok_or_else(|| "A branch name is required.".to_string())?;
     if name.trim().is_empty() {
@@ -1150,6 +1162,17 @@ async fn clear_git_op_log() -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // The window is declared `create: false` in tauri.conf.json so it
+            // can be built here with devtools turned off: WebView2 gets
+            // AreDevToolsEnabled=false and F12 / the inspector stay dead even
+            // in debug builds.
+            let window_config = app.config().app.windows[0].clone();
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+                .devtools(false)
+                .build()?;
+            Ok(())
+        })
         .manage(AppState {
             root: Mutex::new(None),
         })
@@ -1170,6 +1193,7 @@ fn main() {
             discard_hunk,
             commit,
             switch_branch,
+            checkout_remote_branch,
             create_branch,
             stash_push,
             stash_apply,

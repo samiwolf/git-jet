@@ -812,6 +812,35 @@ impl<E: GitExecutor> GitClient<E> {
         self.text(&["switch", branch])
     }
 
+    /// Check out a remote-tracking branch like `origin/main`.
+    ///
+    /// A plain `git switch` refuses remote-tracking names, so when a local
+    /// branch with the same short name already exists it is switched to
+    /// directly; otherwise `switch -c --track` creates a new local branch
+    /// that tracks the remote one.
+    pub fn checkout_remote_branch(&mut self, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A remote branch name is required.".to_string());
+        }
+        if name.starts_with('-') {
+            return Err(format!("Invalid remote branch name `{name}`."));
+        }
+        let (remote, branch) = name
+            .split_once('/')
+            .ok_or_else(|| format!("`{name}` does not contain a remote (like origin/{name})."))?;
+        if remote.is_empty() || branch.is_empty() {
+            return Err(format!("`{name}` does not contain a remote (like origin/{name})."));
+        }
+        let branch = branch.trim_start_matches('/');
+        // An existing local branch with the same name just gets switched to.
+        let output = self.exec(&["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]);
+        if matches!(output, Ok(output) if output.success()) {
+            return self.switch(branch);
+        }
+        self.text(&["switch", "-c", branch, "--track", name])
+    }
+
     /// Check out a commit directly, leaving HEAD detached.
     pub fn checkout_commit(&mut self, rev: &str) -> Result<String, String> {
         self.text(&["switch", "--detach", rev])
@@ -3193,6 +3222,50 @@ mod tests {
             .delete_remote_branch("main")
             .unwrap_err()
             .contains("does not contain a remote"));
+    }
+
+    #[test]
+    fn remote_checkout_builds_expected_commands() {
+        // Without a same-named local branch: create a tracking branch.
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(1, "") // no local `feature/x`
+                .with(0, "created\n"),
+        );
+        client.checkout_remote_branch("origin/feature/x").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["switch", "-c", "feature/x", "--track", "origin/feature/x"]));
+
+        // With a same-named local branch: plain switch.
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, "aaaa\n") // local `topic` exists
+                .with(0, "switched\n"),
+        );
+        client.checkout_remote_branch("origin/topic").unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["switch", "topic"]));
+
+        // Bare names and flags are rejected.
+        let mut bad = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")
+                .with(0, ""),
+        );
+        assert!(bad
+            .checkout_remote_branch("main")
+            .unwrap_err()
+            .contains("does not contain a remote"));
+        assert!(bad.checkout_remote_branch("-c").is_err());
+        assert!(bad.checkout_remote_branch("").is_err());
     }
 
     #[test]

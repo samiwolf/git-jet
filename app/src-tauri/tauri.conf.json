@@ -15,7 +15,8 @@
         "height": 780,
         "minWidth": 860,
         "minHeight": 560,
-        "additionalBrowserArgs": "--remote-debugging-port=9222 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+        "create": false
       }
     ],
     "security": {
