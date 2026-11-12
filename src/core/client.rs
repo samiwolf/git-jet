@@ -829,16 +829,31 @@ impl<E: GitExecutor> GitClient<E> {
         self.text_owned(&args)
     }
 
-    /// Push the current branch. With a tracked upstream a simple
-    /// `push -u HEAD` keeps the tracking; without one the branch is pushed
-    /// to the default remote by name, which creates the tracking.
+    /// Push the current branch. With a tracked upstream a plain `git push`
+    /// updates the upstream and keeps the tracking. Without one the branch
+    /// is pushed to the default remote by name, which creates the tracking.
     pub fn push(&mut self) -> Result<String, String> {
         if self.head_ref_exists("@{upstream}") {
-            return self.text_owned(&["push".to_string(), "-u".to_string(), "HEAD".to_string()]);
+            // A bare `git push HEAD` fails: git reads the lone `HEAD` as a
+            // repository name, not a refspec. With a tracked upstream a
+            // plain push is the equivalent and keeps the tracking.
+            return self.text(&["push"]);
         }
-        // Fresh clones have no `branch.<name>.remote` config yet, where
-        // `git push -u HEAD` resolves `HEAD` as a literal repository name.
-        // Fall back to the default remote (usually origin) + branch name.
+        // Fresh clones have no `branch.<name>.remote` config yet, where a
+        // plain push would guess. Push by name to the default remote.
+        self.push_current_branch_to_default(true, false)
+    }
+
+    /// Push the current branch to the default remote (usually origin) under
+    /// its own name, e.g. `git push -u origin main`.
+    ///
+    /// A bare `git push HEAD` cannot work because git reads the lone `HEAD`
+    /// as a repository name, so the branch must be named explicitly.
+    fn push_current_branch_to_default(
+        &mut self,
+        set_upstream: bool,
+        force: bool,
+    ) -> Result<String, String> {
         let remote = match self.default_remote() {
             Some(remote) => remote,
             None => {
@@ -857,7 +872,16 @@ impl<E: GitExecutor> GitClient<E> {
                 )
             }
         };
-        self.text(&["push", "-u", remote.as_str(), branch.as_str()])
+        let mut args = vec!["push".to_string()];
+        if set_upstream {
+            args.push("-u".to_string());
+        }
+        if force {
+            args.push("--force-with-lease".to_string());
+        }
+        args.push(remote);
+        args.push(format!("{branch}:{branch}"));
+        self.text_owned(&args)
     }
 
     /// First configured remote name, e.g. `origin`.
@@ -887,9 +911,9 @@ impl<E: GitExecutor> GitClient<E> {
     /// Push with dialog options: optional remote and branch, upstream
     /// tracking and force push.
     ///
-    /// Empty fields fall back like `pull`: no remote pushes `HEAD` to its
-    /// default remote; a remote without a branch pushes the current branch
-    /// under its own name.
+    /// Empty fields fall back like `pull`: no remote pushes the current
+    /// branch to the default remote; a remote without a branch pushes the
+    /// current branch under its own name.
     ///
     /// Force pushes use `--force-with-lease` so remote commits fetched after
     /// the checkout cannot be silently discarded.
@@ -932,7 +956,38 @@ impl<E: GitExecutor> GitClient<E> {
                 args.push(remote.to_string());
                 args.push(format!("{current}:{current}"));
             }
-            (None, _) => args.push("HEAD".to_string()),
+            (None, _) => {
+                // No remote given: behave like the toolbar Push button — the
+                // current branch to the default remote. A bare
+                // `git push HEAD` cannot work because git reads the lone
+                // `HEAD` as a repository name.
+                let remote = match self.default_remote() {
+                    Some(remote) => remote,
+                    None => {
+                        return Err(
+                            "Push needs either a tracked upstream or a configured remote."
+                                .to_string(),
+                        )
+                    }
+                };
+                let current = match branch {
+                    Some(branch) => branch.to_string(),
+                    None => match self.current_branch() {
+                        Some(current) => current,
+                        None => {
+                            return Err(
+                                "Push needs a branch; commit inside a branch first (detached HEAD)."
+                                    .to_string(),
+                            )
+                        }
+                    },
+                };
+                if current.starts_with('-') {
+                    return Err(format!("Invalid branch name `{current}`."));
+                }
+                args.push(remote);
+                args.push(format!("{current}:{current}"));
+            }
         }
         self.text_owned(&args)
     }
@@ -2453,16 +2508,30 @@ mod tests {
             .iter()
             .any(|call| call == &vec!["push", "-u", "origin", "nginx:nginx"]));
 
+        // An empty remote behaves like the toolbar Push button: the current
+        // branch goes to the default remote (a bare `git push HEAD` fails —
+        // git would read the lone `HEAD` as a repository name).
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n") // rev-parse --show-toplevel
+                .with(0, "origin\n")     // git remote
+                .with(0, "main\n")       // branch --show-current
+                .with(0, "pushed\n"),
+        );
         client.push_with_options(None, None, true, false).unwrap();
         assert!(client
             .executor
             .calls
             .iter()
-            .any(|call| call == &vec!["push", "--force-with-lease", "HEAD"]));
+            .any(|call| call == &vec!["push", "--force-with-lease", "origin", "main:main"]));
 
         // A remote without a branch pushes the current branch under its own
-        // name (like the toolbar Push button) instead of erroring.
-        let mut client = client_with(MockExecutor::default().with(0, "main\n"));
+        // name instead of erroring.
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n") // rev-parse --show-toplevel
+                .with(0, "main\n"),      // branch --show-current
+        );
         client.push_with_options(Some("origin"), None, false, false).unwrap();
         assert!(client
             .executor
@@ -2472,6 +2541,36 @@ mod tests {
 
         // Detached HEAD still fails: there is no branch name to push.
         assert!(client.push_with_options(Some("origin"), None, false, false).is_err());
+    }
+
+    #[test]
+    fn push_pushes_upstream_or_default_remote_by_name() {
+        // With a tracked upstream: a plain push (a bare `git push -u HEAD`
+        // fails because git reads `HEAD` as a repository name).
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n") // rev-parse --show-toplevel
+                .with(0, "abc\n")        // rev-parse @{upstream} exists
+                .with(0, "pushed\n"),
+        );
+        client.push().unwrap();
+        assert!(client.executor.calls.iter().any(|call| call == &vec!["push"]));
+
+        // Without an upstream: default remote + current branch by name.
+        let mut client = client_with(
+            MockExecutor::default()
+                .with(0, "C:/project\n")       // rev-parse --show-toplevel
+                .with_error(128, "no upstream") // rev-parse @{upstream} fails
+                .with(0, "origin\n")            // git remote
+                .with(0, "main\n")              // branch --show-current
+                .with(0, "pushed\n"),
+        );
+        client.push().unwrap();
+        assert!(client
+            .executor
+            .calls
+            .iter()
+            .any(|call| call == &vec!["push", "-u", "origin", "main:main"]));
     }
 
     #[test]
