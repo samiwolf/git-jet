@@ -499,6 +499,27 @@ async fn get_worktree_file(file: Option<String>, state: State<'_, AppState>) -> 
     with_engine(&state, move |client| client.worktree_file_content(&file)).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeVersionsDto {
+    base: String,
+    ours: String,
+    theirs: String,
+}
+
+#[tauri::command]
+async fn get_merge_versions(
+    file: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<MergeVersionsDto, String> {
+    let file = file.ok_or_else(|| "A file path is required.".to_string())?;
+    with_engine(&state, move |client| {
+        let (base, ours, theirs) = client.merge_versions(&file)?;
+        Ok(MergeVersionsDto { base, ours, theirs })
+    })
+    .await
+}
+
 #[tauri::command]
 async fn write_merge_result(
     file: Option<String>,
@@ -1248,6 +1269,7 @@ fn main() {
             remove_worktree,
             prune_worktrees,
             get_worktree_file,
+            get_merge_versions,
             write_merge_result,
             delete_branch,
             delete_remote_branch,

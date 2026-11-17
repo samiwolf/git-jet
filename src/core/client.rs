@@ -653,6 +653,36 @@ impl<E: GitExecutor> GitClient<E> {
             .map_err(|error| format!("Could not read `{path}`: {error}"))
     }
 
+    /// Reads one merge stage of a conflicted file (`:1:` base, `:2:` ours,
+    /// `:3:` theirs) as raw blob text; `None` when the file has no such stage
+    /// (e.g. one side added or deleted it).
+    fn merge_stage(&mut self, stage: u8, path: &str) -> Result<Option<String>, String> {
+        match self.exec(&["show", &format!(":{stage}:{path}")]) {
+            Ok(output) if output.success() => Ok(Some(output.stdout_lossy())),
+            _ => Ok(None),
+        }
+    }
+
+    /// Reads the three merge stages of a conflicted file:
+    /// base (`:1:`), ours (`:2:`) and theirs (`:3:`).
+    ///
+    /// A missing stage falls back to an empty string, which the merge editor
+    /// treats as "this side has no content here" (whole-file add/delete cases).
+    pub fn merge_versions(&mut self, path: &str) -> Result<(String, String, String), String> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("A file path is required.".to_string());
+        }
+        let mut stage = |n| self.merge_stage(n, path);
+        let base = stage(1)?.unwrap_or_default();
+        let ours = stage(2)?.unwrap_or_default();
+        let theirs = stage(3)?.unwrap_or_default();
+        if ours.is_empty() && theirs.is_empty() && base.is_empty() {
+            return Err(format!("`{path}` has no merge stages — is it really conflicted?"));
+        }
+        Ok((base, ours, theirs))
+    }
+
     /// Writes a resolved merge result to the working tree and stages the
     /// file (`git add`), which marks the conflict as resolved.
     pub fn write_merge_result(&mut self, path: &str, content: &str) -> Result<String, String> {

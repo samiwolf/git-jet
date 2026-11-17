@@ -2173,62 +2173,176 @@ async function createTagAt(commit) {
 
 /* ------------------------------------------------------------- merge editor */
 
-const MERGE_MARKER = {
-  start: /^<{7}/,
-  base: /^\|{7}/,
-  sep: /^\={7}/,
-  end: /^>{7}/,
-};
-
-/* Splits worktree content into segments from the merge markers:
-   {kind:"common", lines} and {kind:"conflict", ours[], base[], theirs[], choice}. */
-function parseConflictSegments(content) {
+/* Splits file content into lines, dropping a single trailing empty line. */
+function mergeSplitLines(content) {
   const lines = content.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  const segments = [];
-  let common = null;
-  let block = null;
+  return lines;
+}
+
+/* LCS line diff of `side` against `base`. Returns hunks
+   {start, end, lines} where base[start..end) is replaced by `lines`.
+   Huge files skip the O(n*m) table and become one whole-file hunk. */
+function diffAgainstBase(base, side) {
+  const n = base.length;
+  const m = side.length;
+  if (n * m > 4000000) {
+    return n === 0 && m === 0 ? [] : [{ start: 0, end: n, lines: side.slice() }];
+  }
+  const width = m + 1;
+  const lcs = new Int32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i * width + j] = base[i] === side[j]
+        ? lcs[(i + 1) * width + j + 1] + 1
+        : Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1]);
+    }
+  }
+  const hunks = [];
+  let run = null; // {start, end, lines}
+  let i = 0;
+  let j = 0;
   const flush = () => {
-    if (common) {
-      segments.push({ kind: "common", lines: common });
-      common = null;
+    if (run) {
+      hunks.push(run);
+      run = null;
     }
   };
-  for (const line of lines) {
-    if (block) {
-      if (block.side === "ours") {
-        if (MERGE_MARKER.base.test(line)) block.side = "base";
-        else if (MERGE_MARKER.sep.test(line)) block.side = "theirs";
-        else block.ours.push(line);
-      } else if (block.side === "base") {
-        if (MERGE_MARKER.sep.test(line)) block.side = "theirs";
-        else block.base.push(line);
-      } else if (MERGE_MARKER.end.test(line)) {
-        segments.push({ kind: "conflict", ours: block.ours, base: block.base, theirs: block.theirs, choice: null });
-        block = null;
-      } else {
-        block.theirs.push(line);
-      }
-    } else if (MERGE_MARKER.start.test(line)) {
+  while (i < n && j < m) {
+    if (base[i] === side[j]) {
       flush();
-      block = { ours: [], base: [], theirs: [], side: "ours" };
+      i++;
+      j++;
+    } else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) {
+      run = run || { start: i, end: i, lines: [] };
+      run.end = i + 1;
+      i++;
     } else {
-      (common = common || []).push(line);
+      run = run || { start: i, end: i, lines: [] };
+      run.lines.push(side[j]);
+      j++;
     }
   }
-  // Git cuts off unterminated markers (e.g. checkout -m edge cases); keep
-  // what we parsed rather than losing the content.
-  if (block) {
-    segments.push({ kind: "conflict", ours: block.ours, base: block.base, theirs: block.theirs, choice: null });
+  while (i < n) {
+    run = run || { start: i, end: i, lines: [] };
+    run.end = i + 1;
+    i++;
+  }
+  while (j < m) {
+    run = run || { start: n, end: n, lines: [] };
+    run.lines.push(side[j]);
+    j++;
   }
   flush();
+  return hunks;
+}
+
+/* True when the two base ranges [aStart,aEnd) and [bStart,bEnd) clash:
+   overlapping, or an insertion landing at the same spot as another hunk. */
+function hunksOverlap(aStart, aEnd, bStart, bEnd) {
+  if (aStart < bEnd && bStart < aEnd) return true;
+  if (aStart === aEnd && bStart <= aStart && aStart <= bEnd) return true;
+  if (bStart === bEnd && aStart <= bStart && bStart <= aEnd) return true;
+  return false;
+}
+
+/* base[start..end) with the given hunks (subset) applied over it. */
+function applyHunks(base, start, end, hunks) {
+  const lines = [];
+  let pos = start;
+  for (const hunk of hunks) {
+    lines.push(...base.slice(pos, hunk.start));
+    lines.push(...hunk.lines);
+    pos = hunk.end;
+  }
+  lines.push(...base.slice(pos, end));
+  return lines;
+}
+
+/* Builds the hunk-based model from the three merge stages:
+   {kind:"common", lines} unchanged everywhere,
+   {kind:"change", side, baseLines, lines, applied} one side changed only,
+   {kind:"conflict", baseLines, leftLines, rightLines, choice} both changed. */
+function buildMergeSegments(versions) {
+  const base = mergeSplitLines(versions.base);
+  const tagged = [
+    ...diffAgainstBase(base, mergeSplitLines(versions.ours)).map((h) => ({ side: "left", ...h })),
+    ...diffAgainstBase(base, mergeSplitLines(versions.theirs)).map((h) => ({ side: "right", ...h })),
+  ].sort((a, b) => a.start - b.start || a.end - b.end);
+
+  const segments = [];
+  let pos = 0;
+  let idx = 0;
+  while (idx < tagged.length) {
+    // Group transitively clashing hunks; the sorted scan can stop at the
+    // first non-clashing hunk because later starts only move further right.
+    const group = [tagged[idx]];
+    let start = tagged[idx].start;
+    let end = tagged[idx].end;
+    let k = idx + 1;
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (; k < tagged.length; k++) {
+        const hunk = tagged[k];
+        if (hunksOverlap(start, end, hunk.start, hunk.end)) {
+          group.push(hunk);
+          start = Math.min(start, hunk.start);
+          end = Math.max(end, hunk.end);
+          grew = true;
+        } else {
+          break;
+        }
+      }
+    }
+    if (start > pos) segments.push({ kind: "common", lines: base.slice(pos, start) });
+    if (group.length === 1) {
+      const hunk = group[0];
+      segments.push({
+        kind: "change",
+        side: hunk.side,
+        baseLines: base.slice(start, end),
+        lines: hunk.lines,
+        applied: false,
+      });
+    } else {
+      const left = applyHunks(base, start, end, group.filter((h) => h.side === "left"));
+      const right = applyHunks(base, start, end, group.filter((h) => h.side === "right"));
+      if (left.join("\n") === right.join("\n")) {
+        // Both sides made the identical change — offer it as non-conflicting.
+        segments.push({
+          kind: "change",
+          side: "both",
+          baseLines: base.slice(start, end),
+          lines: left,
+          applied: false,
+        });
+      } else {
+        segments.push({ kind: "conflict", baseLines: base.slice(start, end), leftLines: left, rightLines: right, choice: null });
+      }
+    }
+    pos = end;
+    idx = k;
+  }
+  if (pos < base.length) segments.push({ kind: "common", lines: base.slice(pos) });
   return segments;
 }
 
 function mergeSegmentLines(segment) {
-  if (segment.kind === "common") return segment.lines;
-  if (!segment.choice) return null;
-  return segment.choice === "ours" ? segment.ours : segment.theirs;
+  switch (segment.kind) {
+    case "common":
+      return segment.lines;
+    case "change":
+      return segment.applied ? segment.lines : segment.baseLines;
+    case "conflict": {
+      if (!segment.choice) return null;
+      if (segment.choice === "left") return segment.leftLines;
+      if (segment.choice === "right") return segment.rightLines;
+      return [...segment.leftLines, ...segment.rightLines];
+    }
+    default:
+      return null;
+  }
 }
 
 function mergeUnresolved() {
@@ -2236,8 +2350,8 @@ function mergeUnresolved() {
   return state.mergeSegments.filter((s) => s.kind === "conflict" && !s.choice).length;
 }
 
-/* The result being applied: fully joined when every conflict is resolved,
-   null while any is left open. */
+/* The result being applied: base content with every applied change and
+   chosen conflict side; null while any conflict is left open. */
 function mergeResolvedContent() {
   if (!state.mergeSegments) return null;
   const lines = [];
@@ -2251,11 +2365,12 @@ function mergeResolvedContent() {
 }
 
 function openMergeEditor(entry) {
-  invoke("get_worktree_file", { file: entry.path })
-    .then((content) => {
+  invoke("get_merge_versions", { file: entry.path })
+    .then((versions) => {
       state.mergeFile = entry;
-      state.mergeTrailingNewline = content.endsWith("\n");
-      state.mergeSegments = parseConflictSegments(content);
+      state.mergeVersions = versions;
+      state.mergeTrailingNewline = versions.ours.endsWith("\n") || versions.theirs.endsWith("\n");
+      state.mergeSegments = buildMergeSegments(versions);
       $("merge-path").textContent = entry.displayPath;
       $("merge-error").textContent = "";
       renderMergeEditor();
@@ -2281,8 +2396,8 @@ function mergeButton(label, run) {
 function renderMergeEditor() {
   const body = $("merge-body");
   body.replaceChildren();
-  let oursNo = 1;
-  let theirsNo = 1;
+  let leftNo = 1;
+  let rightNo = 1;
   let resultNo = 1;
   for (const segment of state.mergeSegments) {
     const row = el("div", "merge-row");
@@ -2291,25 +2406,56 @@ function renderMergeEditor() {
     const result = el("div", "merge-cell merge-result");
     if (segment.kind === "common") {
       for (const text of segment.lines) {
-        left.append(mergeLine(oursNo++, text, "merge-ctx"));
-        right.append(mergeLine(theirsNo++, text, "merge-ctx"));
+        left.append(mergeLine(leftNo++, text, "merge-ctx"));
+        right.append(mergeLine(rightNo++, text, "merge-ctx"));
         result.append(mergeLine(resultNo++, text, ""));
       }
-    } else {
-      const resolved = mergeSegmentLines(segment);
-      for (const text of segment.ours) left.append(mergeLine(oursNo++, text, "merge-ours"));
-      for (const text of segment.theirs) right.append(mergeLine(theirsNo++, text, "merge-theirs"));
-      if (resolved === null) {
+    } else if (segment.kind === "change") {
+      // Only one side changed here: show its content on that side and the
+      // untouched base on the other, with a toggle in the result pane.
+      const ownLeft = segment.side === "left" || segment.side === "both";
+      const ownRight = segment.side === "right" || segment.side === "both";
+      for (const text of segment.lines) {
+        if (ownLeft) left.append(mergeLine(leftNo++, text, "merge-ours"));
+        if (ownRight) right.append(mergeLine(rightNo++, text, "merge-theirs"));
+      }
+      for (const text of segment.baseLines) {
+        if (!ownLeft) left.append(mergeLine(leftNo++, text, "merge-ctx"));
+        if (!ownRight) right.append(mergeLine(rightNo++, text, "merge-ctx"));
+      }
+      if (segment.applied) {
+        for (const text of segment.lines) {
+          result.append(mergeLine(resultNo++, text, `merge-chosen ${ownLeft ? "left" : "right"}`));
+        }
+        const undo = mergeButton("✕", () => toggleChangeSegment(segment));
+        undo.classList.add("merge-undo");
+        undo.title = "Exclude this non-conflicting change";
+        result.append(undo);
+      } else {
         const bar = el("div", "merge-resolve");
         bar.append(
-          el("span", "merge-resolve-hint", "unresolved"),
-          mergeButton("◀ Accept ours", () => chooseSegment(segment, "ours")),
-          mergeButton("Accept theirs ▶", () => chooseSegment(segment, "theirs"))
+          el("span", "merge-resolve-hint", ownLeft ? "change from left" : "change from right"),
+          mergeButton("Apply", () => toggleChangeSegment(segment))
         );
         result.append(bar);
-        result.append(el("div", "merge-unresolved", "Choose a version to place it here."));
+        result.append(el("div", "merge-unresolved", "Not applied — use Apply or “Apply non-conflicting changes”."));
+      }
+    } else {
+      // Both sides changed the same region: choose left, right or both.
+      for (const text of segment.leftLines) left.append(mergeLine(leftNo++, text, "merge-ours"));
+      for (const text of segment.rightLines) right.append(mergeLine(rightNo++, text, "merge-theirs"));
+      if (segment.choice === null) {
+        const bar = el("div", "merge-resolve");
+        bar.append(
+          el("span", "merge-resolve-hint", "conflict"),
+          mergeButton("◀ Take left", () => chooseSegment(segment, "left")),
+          mergeButton("Take both", () => chooseSegment(segment, "both")),
+          mergeButton("Take right ▶", () => chooseSegment(segment, "right"))
+        );
+        result.append(bar);
+        result.append(el("div", "merge-unresolved", "Take hunks from the left, right or both to place them here."));
       } else {
-        for (const text of resolved) {
+        for (const text of mergeSegmentLines(segment)) {
           result.append(mergeLine(resultNo++, text, `merge-chosen ${segment.choice}`));
         }
         const undo = mergeButton("⟲", () => chooseSegment(segment, null));
@@ -2326,6 +2472,9 @@ function renderMergeEditor() {
   pill.textContent = unresolved === 0 ? "all conflict(s) resolved" : `${unresolved} unresolved`;
   pill.classList.toggle("ok", unresolved === 0);
   $("merge-apply").disabled = unresolved > 0;
+  $("merge-apply-nonconflict").disabled = !state.mergeSegments.some(
+    (s) => s.kind === "change" && !s.applied
+  );
 }
 
 function chooseSegment(segment, choice) {
@@ -2333,10 +2482,24 @@ function chooseSegment(segment, choice) {
   renderMergeEditor();
 }
 
+function toggleChangeSegment(segment) {
+  segment.applied = !segment.applied;
+  renderMergeEditor();
+}
+
 function acceptAllMerge(choice) {
   if (!state.mergeSegments) return;
   for (const segment of state.mergeSegments) {
     if (segment.kind === "conflict") segment.choice = choice;
+  }
+  renderMergeEditor();
+}
+
+/* Header action: include every one-sided (and identical) change at once. */
+function applyNonConflictingMerge() {
+  if (!state.mergeSegments) return;
+  for (const segment of state.mergeSegments) {
+    if (segment.kind === "change") segment.applied = true;
   }
   renderMergeEditor();
 }
@@ -2357,7 +2520,7 @@ async function closeMergeEditor() {
 async function applyMergeResult() {
   const content = mergeResolvedContent();
   if (content === null) {
-    $("merge-error").textContent = "Conflicts remain unresolved — accept a version for every block first.";
+    $("merge-error").textContent = "Conflicts remain unresolved — take left, right or both for every block first.";
     return;
   }
   const entry = state.mergeFile;
@@ -3468,8 +3631,9 @@ function boot() {
   /* merge editor */
   $("merge-cancel").addEventListener("click", closeMergeEditor);
   $("merge-apply").addEventListener("click", () => void guardButton($("merge-apply"), applyMergeResult));
-  $("merge-all-ours").addEventListener("click", () => void guardButton($("merge-all-ours"), () => acceptAllMerge("ours")));
-  $("merge-all-theirs").addEventListener("click", () => void guardButton($("merge-all-theirs"), () => acceptAllMerge("theirs")));
+  $("merge-all-ours").addEventListener("click", () => void guardButton($("merge-all-ours"), () => acceptAllMerge("left")));
+  $("merge-all-theirs").addEventListener("click", () => void guardButton($("merge-all-theirs"), () => acceptAllMerge("right")));
+  $("merge-apply-nonconflict").addEventListener("click", () => void guardButton($("merge-apply-nonconflict"), applyNonConflictingMerge));
   $("prompt-ok").addEventListener("click", () => {
     const handler = promptHandler;
     if (handler) void guardButton($("prompt-ok"), handler);
