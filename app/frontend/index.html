@@ -328,17 +328,18 @@
       <div class="dialog-card merge-card">
         <div class="merge-head">
           <span id="merge-path" class="merge-path"></span>
-          <span id="merge-count" class="merge-count"></span>
           <div class="merge-head-actions">
-            <button id="merge-apply-nonconflict" class="btn small" title="Include every one-sided (non-conflicting) change at once">Apply non-conflicting changes</button>
-            <button id="merge-all-ours" class="btn small" title="Take the left (current) hunks for every conflict">Accept all left</button>
-            <button id="merge-all-theirs" class="btn small" title="Take the right (incoming) hunks for every conflict">Accept all right</button>
+            <span class="merge-nonsplit">Apply non-conflicting changes:</span>
+            <button id="merge-all-ours" class="btn small" title="Apply non-conflicting changes and resolve every conflict from the left">&gt;&gt; Left</button>
+            <button id="merge-all-both" class="btn small" title="Apply all non-conflicting changes from both sides">All</button>
+            <button id="merge-all-theirs" class="btn small" title="Apply non-conflicting changes and resolve every conflict from the right">&lt;&lt; Right</button>
           </div>
+          <span id="merge-count" class="merge-count"></span>
         </div>
         <div class="merge-colheads">
-          <span>Current (ours)</span>
-          <span>Incoming (theirs)</span>
-          <span>Merge result</span>
+          <span>Changes from ours</span>
+          <span><span id="merge-result-label">Result</span> <span id="merge-file" class="merge-file"></span></span>
+          <span>Changes from theirs</span>
         </div>
         <div id="merge-body" class="merge-body"></div>
         <p id="merge-error" class="dialog-error"></p>

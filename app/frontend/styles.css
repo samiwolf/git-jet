@@ -708,12 +708,14 @@ body.resizing { cursor: col-resize; user-select: none; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.merge-count { font-size: var(--fs-mono, 12px); color: var(--conflict); white-space: nowrap; }
+.merge-count { font-size: var(--fs-mono, 12px); color: var(--conflict); white-space: nowrap; margin-left: auto; }
 .merge-count.ok { color: var(--added); }
+.merge-nonsplit { color: var(--muted); font-size: var(--fs-small, 11px); }
+.merge-file { color: var(--muted); font-weight: 400; margin-left: 6px; }
 .merge-head-actions { margin-left: auto; display: flex; gap: 6px; }
 .merge-colheads {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.3fr;
+  grid-template-columns: 1fr 1.3fr 1fr;
 }
 .merge-colheads span {
   background: var(--panel-alt);
@@ -739,7 +741,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .merge-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.3fr;
+  grid-template-columns: 1fr 1.3fr 1fr;
   align-content: start;
 }
 .merge-cell { min-width: 0; padding: 2px 0; border-right: 1px solid var(--border); position: relative; }
@@ -758,24 +760,39 @@ body.resizing { cursor: col-resize; user-select: none; }
 .merge-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
 .merge-line.merge-ours .merge-text { background: var(--added-bg); }
 .merge-line.merge-theirs .merge-text { background: var(--theirs-bg); }
-.merge-line.merge-ctx .merge-text { background: var(--modified-bg); opacity: 0.55; }
-.merge-line.merge-chosen .merge-text { opacity: 1; }
-.merge-resolve { display: flex; align-items: center; gap: 6px; padding: 4px 8px; }
-.merge-resolve-hint { color: var(--muted); font-size: var(--fs-small, 11px); margin-right: auto; padding-left: 4px; }
-.merge-unresolved {
-  margin: 2px 8px 6px;
-  padding: 10px 12px;
-  border-radius: 4px;
-  border: 1px dashed var(--conflict);
+.merge-line.merge-ctx .merge-text { color: var(--muted); }
+.merge-line.merge-base .merge-text { color: var(--muted); }
+.merge-line.merge-chosen.left .merge-text { background: var(--added-bg); }
+.merge-line.merge-chosen.right .merge-text { background: var(--theirs-bg); }
+.merge-line.merge-chosen.both .merge-text { background: var(--modified-bg); }
+/* Per-hunk buttons on the inner edges: bare >> / << glyphs, one line tall. */
+.merge-accept {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  min-height: 0;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
   color: var(--muted);
-  font-style: italic;
-  background: repeating-linear-gradient(
-    -45deg,
-    transparent 0 6px,
-    var(--conflict-bg) 6px 12px
-  );
+  font-size: var(--fs-mono, 12px);
+  font-weight: 700;
+  line-height: 18px;
+  opacity: 0.7;
 }
-.merge-undo { position: absolute; top: 3px; right: 8px; padding: 0 5px; z-index: 2; }
+.merge-accept:hover { opacity: 1; color: var(--text); }
+.merge-accept-left { right: 4px; }
+.merge-accept-right { left: 4px; }
+.merge-accept-cross-l { right: 26px; }
+.merge-accept-cross-r { left: 26px; }
+/* Reserve a gutter strip on the inner edges so "X >>" / "<< X" never
+   overlap the code text. */
+.merge-cell:first-child { padding-right: 52px; }
+.merge-cell:last-child { padding-left: 52px; }
+/* Conflict hunks carry red stripes on the outer edges; changed content is
+   colored per line, so no extra row tint is needed. */
+.merge-row-conflict > .merge-cell:first-child { box-shadow: inset 2px 0 0 var(--conflict); }
+.merge-row-conflict > .merge-cell:last-child { box-shadow: inset -2px 0 0 var(--conflict); }
 
 /* ---------- tags menu ---------- */
 .tag-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; }

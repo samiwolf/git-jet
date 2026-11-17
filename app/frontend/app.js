@@ -2318,7 +2318,7 @@ function buildMergeSegments(versions) {
           applied: false,
         });
       } else {
-        segments.push({ kind: "conflict", baseLines: base.slice(start, end), leftLines: left, rightLines: right, choice: null });
+        segments.push({ kind: "conflict", baseLines: base.slice(start, end), leftLines: left, rightLines: right, leftState: "none", rightState: "none" });
       }
     }
     pos = end;
@@ -2335,10 +2335,13 @@ function mergeSegmentLines(segment) {
     case "change":
       return segment.applied ? segment.lines : segment.baseLines;
     case "conflict": {
-      if (!segment.choice) return null;
-      if (segment.choice === "left") return segment.leftLines;
-      if (segment.choice === "right") return segment.rightLines;
-      return [...segment.leftLines, ...segment.rightLines];
+      const left = segment.leftState;
+      const right = segment.rightState;
+      if (left === "accept" && right === "accept") return [...segment.leftLines, ...segment.rightLines];
+      if (left === "accept") return segment.leftLines;
+      if (right === "accept") return segment.rightLines;
+      if (left === "discard" || right === "discard") return segment.baseLines;
+      return null;
     }
     default:
       return null;
@@ -2347,7 +2350,7 @@ function mergeSegmentLines(segment) {
 
 function mergeUnresolved() {
   if (!state.mergeSegments) return 0;
-  return state.mergeSegments.filter((s) => s.kind === "conflict" && !s.choice).length;
+  return state.mergeSegments.filter((s) => s.kind === "conflict" && s.leftState === "none" && s.rightState === "none").length;
 }
 
 /* The result being applied: base content with every applied change and
@@ -2372,6 +2375,7 @@ function openMergeEditor(entry) {
       state.mergeTrailingNewline = versions.ours.endsWith("\n") || versions.theirs.endsWith("\n");
       state.mergeSegments = buildMergeSegments(versions);
       $("merge-path").textContent = entry.displayPath;
+      $("merge-file").textContent = entry.displayPath;
       $("merge-error").textContent = "";
       renderMergeEditor();
       show($("merge-dialog"));
@@ -2412,7 +2416,8 @@ function renderMergeEditor() {
       }
     } else if (segment.kind === "change") {
       // Only one side changed here: show its content on that side and the
-      // untouched base on the other, with a toggle in the result pane.
+      // untouched base on the other, with a toggle on the owning pane.
+      row.classList.add("merge-row-change");
       const ownLeft = segment.side === "left" || segment.side === "both";
       const ownRight = segment.side === "right" || segment.side === "both";
       for (const text of segment.lines) {
@@ -2427,58 +2432,95 @@ function renderMergeEditor() {
         for (const text of segment.lines) {
           result.append(mergeLine(resultNo++, text, `merge-chosen ${ownLeft ? "left" : "right"}`));
         }
-        const undo = mergeButton("✕", () => toggleChangeSegment(segment));
-        undo.classList.add("merge-undo");
+        const undo = mergeButton("X", () => toggleChangeSegment(segment));
+        undo.classList.add("merge-accept", "merge-accept-left");
         undo.title = "Exclude this non-conflicting change";
         result.append(undo);
       } else {
-        const bar = el("div", "merge-resolve");
-        bar.append(
-          el("span", "merge-resolve-hint", ownLeft ? "change from left" : "change from right"),
-          mergeButton("Apply", () => toggleChangeSegment(segment))
-        );
-        result.append(bar);
-        result.append(el("div", "merge-unresolved", "Not applied — use Apply or “Apply non-conflicting changes”."));
+        // Not applied yet: the result shows the base content until applied.
+        for (const text of segment.baseLines) {
+          result.append(mergeLine(resultNo++, text, "merge-base"));
+        }
+        // The toggle sits on the owning pane's inner edge, pointing into the result.
+        const apply = mergeButton(ownLeft ? ">>" : "<<", () => toggleChangeSegment(segment));
+        apply.classList.add("merge-accept", ownLeft ? "merge-accept-left" : "merge-accept-right");
+        apply.title = "Apply this non-conflicting change into the result";
+        (ownLeft ? left : right).append(apply);
       }
     } else {
-      // Both sides changed the same region: choose left, right or both.
-      for (const text of segment.leftLines) left.append(mergeLine(leftNo++, text, "merge-ours"));
-      for (const text of segment.rightLines) right.append(mergeLine(rightNo++, text, "merge-theirs"));
-      if (segment.choice === null) {
-        const bar = el("div", "merge-resolve");
-        bar.append(
-          el("span", "merge-resolve-hint", "conflict"),
-          mergeButton("◀ Take left", () => chooseSegment(segment, "left")),
-          mergeButton("Take both", () => chooseSegment(segment, "both")),
-          mergeButton("Take right ▶", () => chooseSegment(segment, "right"))
-        );
-        result.append(bar);
-        result.append(el("div", "merge-unresolved", "Take hunks from the left, right or both to place them here."));
-      } else {
-        for (const text of mergeSegmentLines(segment)) {
-          result.append(mergeLine(resultNo++, text, `merge-chosen ${segment.choice}`));
+      // Both sides changed the same region: accept or discard each side's
+      // hunk independently. Accept wins over discard; only discards keep
+      // the base content.
+      row.classList.add("merge-row-conflict");
+      for (const text of segment.leftLines) {
+        left.append(mergeLine(leftNo++, text, segment.leftState === "discard" ? "merge-ctx" : "merge-ours"));
+      }
+      for (const text of segment.rightLines) {
+        right.append(mergeLine(rightNo++, text, segment.rightState === "discard" ? "merge-ctx" : "merge-theirs"));
+      }
+      const resolved = mergeSegmentLines(segment);
+      // Left pane controls on the inner edge: ">>" accept, "X" discard.
+      // A discarded hunk can no longer be merged; only the result's reset
+      // X brings the buttons back.
+      if (segment.leftState === "none") {
+        const takeLeft = mergeButton(">>", () => chooseSegment(segment, "left", "accept"));
+        takeLeft.classList.add("merge-accept", "merge-accept-left");
+        takeLeft.title = "Accept this left hunk into the result";
+        left.append(takeLeft);
+        const discardLeft = mergeButton("X", () => chooseSegment(segment, "left", "discard"));
+        discardLeft.classList.add("merge-accept", "merge-accept-cross-l");
+        discardLeft.title = "Discard the left hunk — keep the base content for this side";
+        left.append(discardLeft);
+      }
+      // Right pane controls: "<< X".
+      if (segment.rightState === "none") {
+        const takeRight = mergeButton("<<", () => chooseSegment(segment, "right", "accept"));
+        takeRight.classList.add("merge-accept", "merge-accept-right");
+        takeRight.title = "Accept this right hunk into the result";
+        right.append(takeRight);
+        const discardRight = mergeButton("X", () => chooseSegment(segment, "right", "discard"));
+        discardRight.classList.add("merge-accept", "merge-accept-cross-r");
+        discardRight.title = "Discard the right hunk — keep the base content for this side";
+        right.append(discardRight);
+      }
+      if (resolved !== null) {
+        const chosen = segment.leftState === "accept" && segment.rightState === "accept" ? "both"
+          : segment.leftState === "accept" ? "left"
+          : segment.rightState === "accept" ? "right"
+          : "base";
+        for (const text of resolved) {
+          result.append(mergeLine(resultNo++, text, chosen === "base" ? "merge-base" : `merge-chosen ${chosen}`));
         }
-        const undo = mergeButton("⟲", () => chooseSegment(segment, null));
-        undo.classList.add("merge-undo");
-        undo.title = `Reset choice (currently ${segment.choice})`;
+        const undo = mergeButton("X", () => resetSegment(segment));
+        undo.classList.add("merge-accept", "merge-accept-left");
+        undo.title = "Reset hunk — decide again";
         result.append(undo);
+      } else {
+        // Undecided: the result shows the base content, dimmed.
+        for (const text of segment.baseLines) {
+          result.append(mergeLine(resultNo++, text, "merge-base"));
+        }
       }
     }
-    row.append(left, right, result);
+    row.append(left, result, right);
     body.append(row);
   }
   const unresolved = mergeUnresolved();
   const pill = $("merge-count");
-  pill.textContent = unresolved === 0 ? "all conflict(s) resolved" : `${unresolved} unresolved`;
+  const changes = state.mergeSegments.filter((s) => s.kind === "change").length;
+  pill.textContent = `${changes} changes. ${unresolved} conflicts.`;
   pill.classList.toggle("ok", unresolved === 0);
   $("merge-apply").disabled = unresolved > 0;
-  $("merge-apply-nonconflict").disabled = !state.mergeSegments.some(
-    (s) => s.kind === "change" && !s.applied
-  );
 }
 
-function chooseSegment(segment, choice) {
-  segment.choice = choice;
+function chooseSegment(segment, side, action) {
+  segment[`${side}State`] = action;
+  renderMergeEditor();
+}
+
+function resetSegment(segment) {
+  segment.leftState = "none";
+  segment.rightState = "none";
   renderMergeEditor();
 }
 
@@ -2487,10 +2529,17 @@ function toggleChangeSegment(segment) {
   renderMergeEditor();
 }
 
+/* ">> Left" / "<< Right": resolve everything from one side — include all
+   non-conflicting changes, accept that side for every conflict and discard
+   the opposite side. */
 function acceptAllMerge(choice) {
   if (!state.mergeSegments) return;
   for (const segment of state.mergeSegments) {
-    if (segment.kind === "conflict") segment.choice = choice;
+    if (segment.kind === "change") segment.applied = true;
+    else if (segment.kind === "conflict") {
+      segment[`${choice}State`] = "accept";
+      segment[`${choice === "left" ? "right" : "left"}State`] = "discard";
+    }
   }
   renderMergeEditor();
 }
@@ -2520,7 +2569,7 @@ async function closeMergeEditor() {
 async function applyMergeResult() {
   const content = mergeResolvedContent();
   if (content === null) {
-    $("merge-error").textContent = "Conflicts remain unresolved — take left, right or both for every block first.";
+    $("merge-error").textContent = "Conflicts remain unresolved — accept a hunk from the left or right for every block first.";
     return;
   }
   const entry = state.mergeFile;
@@ -3633,7 +3682,7 @@ function boot() {
   $("merge-apply").addEventListener("click", () => void guardButton($("merge-apply"), applyMergeResult));
   $("merge-all-ours").addEventListener("click", () => void guardButton($("merge-all-ours"), () => acceptAllMerge("left")));
   $("merge-all-theirs").addEventListener("click", () => void guardButton($("merge-all-theirs"), () => acceptAllMerge("right")));
-  $("merge-apply-nonconflict").addEventListener("click", () => void guardButton($("merge-apply-nonconflict"), applyNonConflictingMerge));
+  $("merge-all-both").addEventListener("click", () => void guardButton($("merge-all-both"), applyNonConflictingMerge));
   $("prompt-ok").addEventListener("click", () => {
     const handler = promptHandler;
     if (handler) void guardButton($("prompt-ok"), handler);
