@@ -520,6 +520,24 @@ impl<E: GitExecutor> GitClient<E> {
         self.text_owned(&args)
     }
 
+    /// Forward-applies a patch to the index (`git apply --cached`).
+    ///
+    /// Used for partial staging: `patch` must be a valid unified diff
+    /// fragment including the `diff --git`/`---`/`+++` headers and one or
+    /// more `@@ … @@` hunks taken from an unstaged diff.
+    pub fn stage_hunk(&mut self, patch: &str) -> Result<String, String> {
+        let args = vec![
+            "apply".to_string(),
+            "--cached".to_string(),
+            "--whitespace=nowarn".to_string(),
+        ];
+        let output = self.exec_stdin_owned(&args, patch.as_bytes())?;
+        if !output.success() {
+            return Err(git_failure(&args, &output));
+        }
+        Ok(output.stdout_lossy())
+    }
+
     /// Reverse-apply one hunk patch.
     ///
     /// With `staged`, the hunk is removed from the index (`git apply -R
@@ -2172,6 +2190,23 @@ mod tests {
             .rollback_files(&["conflict.rs".to_string()], RollbackLevel::Staged)
             .unwrap_err();
         assert!(error.contains("resolve the conflict"), "{error}");
+    }
+
+    #[test]
+    fn stage_hunk_applies_patch_to_index() {
+        let mut client = client_with(MockExecutor::default().with(0, "C:/project\n").with(0, ""));
+        client.stage_hunk("patch body\u{a}").unwrap();
+        let call = client
+            .executor
+            .calls
+            .iter()
+            .find(|call| call[0] == "apply")
+            .unwrap();
+        assert_eq!(
+            call,
+            &vec!["apply", "--cached", "--whitespace=nowarn"]
+        );
+        assert_eq!(client.executor.stdin_log[0], b"patch body\n");
     }
 
     #[test]

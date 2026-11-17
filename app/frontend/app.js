@@ -439,7 +439,13 @@ function fileRow(entry, section, onSelect) {
     const command = section === "staged" ? "unstage" : "stage";
     runAction(action.title, () => invoke(command, { paths: [entry.path] }), true, action);
   });
+  if (section === "staged" && partiallyStaged(entry)) {
+    const mark = el("span", "partial-mark", "\u25d0");
+    mark.title = "Partially staged — some hunks are staged, others are not";
+    row.append(mark);
+  }
   row.append(kind, path, action);
+  if (section === "staged" && partiallyStaged(entry)) row.classList.add("partial");
   if (ROLLBACK_LABEL[section]) row.append(rollbackButton(entry, section));
   row.title = entry.displayPath;
   row.dataset.section = section;
@@ -499,9 +505,32 @@ function buildPatch(file, chunk) {
   return header.join("\n") + "\n" + raw.join("\n") + "\n";
 }
 
+/* Partial staging: forward-apply the hunk to the index (`git apply --cached`)
+ * as soon as its checkbox is ticked. No confirmation — the checkbox itself is
+ * the action. The patch is rebuilt from the raw unstaged-diff lines,
+ * byte-identical to what git emitted. */
+async function stageHunks(file, chunks) {
+  if (!chunks.length) return;
+  const header = (file.header || []).join("\n");
+  if (!header) return;
+  const body = chunks.map((chunk) => (chunk.raw || []).join("\n")).filter((raw) => raw.length > 0);
+  if (!body.length) return;
+  const patch = header + "\n" + body.join("\n") + "\n";
+  const label = chunks.length === 1 ? "Stage hunk" : "Stage hunks";
+  await runAction(label, () => invoke("stage_hunk", { patch }));
+}
+
 function stageLabel(section) {
   if (section === "staged") return "−";
   return "→"; // stage
+}
+
+/* A file is partially staged when both the index and the worktree carry
+ * changes (porcelain XY like "MM", "MD", "AM"), i.e. some but not all of
+ * its changes are staged. Conflicts and untracked files never count. */
+function partiallyStaged(entry) {
+  const changed = (code) => code && !" .?U".includes(code);
+  return changed(entry.index) && changed(entry.worktree);
 }
 
 function splitPath(display) {
@@ -792,7 +821,10 @@ function diffModeFor(entry, section) {
   const hasStaged = entry.index && entry.index !== "." && entry.index !== " ";
   const hasUnstaged = entry.worktree && entry.worktree !== "." && entry.worktree !== " ";
   if (section === "staged") return "staged";
-  if (section === "unstaged" || section === "conflict") return hasStaged ? "all" : "unstaged";
+  // Always the worktree-vs-index diff for unstaged rows: it stays stable as
+  // hunks get staged (mixed "MM" files would otherwise flip to "all", which
+  // supports neither hunk staging nor rollback).
+  if (section === "unstaged" || section === "conflict") return "unstaged";
   if (hasUnstaged && hasStaged) return "all";
   return hasStaged ? "staged" : "unstaged";
 }
@@ -893,6 +925,16 @@ function renderDiff(text) {
     card.append(head);
     for (const chunk of file.chunks) {
       const hunkHead = el("div", "diff-hunk");
+      if (target === "unstaged" && (chunk.raw || []).length > 0) {
+        const check = el("input", "hunk-stage-check");
+        check.type = "checkbox";
+        check.title = "Stage this hunk";
+        check.addEventListener("change", () => {
+          if (!check.checked) return; // unchecking is a no-op; staged hunks leave this diff
+          void guardButton(check, () => stageHunks(file, [chunk]));
+        });
+        hunkHead.append(check);
+      }
       const label = el("span", "diff-hunk-text", chunk.header);
       hunkHead.append(label);
       if (target && (chunk.raw || []).length > 0) {

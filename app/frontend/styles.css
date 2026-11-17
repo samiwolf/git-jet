@@ -459,6 +459,16 @@ body.resizing { cursor: col-resize; user-select: none; }
   flex: none;
 }
 .hunk-rollback-btn:hover { color: #fff; background: #3a506f; border-color: #4a6487; }
+.hunk-stage-check {
+  accent-color: #6ea8ff;
+  cursor: pointer;
+  flex: none;
+  margin: 0;
+}
+.hunk-stage-check:disabled { cursor: default; }
+/* Partially staged file marker in the changes list */
+.partial-mark { color: #e8b339; font-size: 12px; flex: none; }
+.file-row.partial .file-path { color: #e8b339; }
 .diff-file-head {
   display: flex;
   align-items: center;

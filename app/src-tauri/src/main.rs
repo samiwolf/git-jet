@@ -478,6 +478,18 @@ async fn discard_hunk(
 }
 
 #[tauri::command]
+async fn stage_hunk(
+    patch: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let patch = patch.unwrap_or_default();
+    if patch.trim().is_empty() {
+        return Err("The hunk patch is empty.".to_string());
+    }
+    with_engine(&state, move |client| client.stage_hunk(&patch)).await
+}
+
+#[tauri::command]
 async fn get_worktree_file(file: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     let file = file.ok_or_else(|| "A file path is required.".to_string())?;
     with_engine(&state, move |client| client.worktree_file_content(&file)).await
@@ -1007,6 +1019,7 @@ fn main() {
             unstage,
             rollback_files,
             discard_hunk,
+            stage_hunk,
             commit,
             switch_branch,
             create_branch,
