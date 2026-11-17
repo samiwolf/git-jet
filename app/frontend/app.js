@@ -89,6 +89,312 @@ const LANE_COLORS = [
 /* Horizontal distance between two graph lanes (px). */
 const LANE_W = 14;
 
+/* ------------------------------------------------------- appearance settings */
+
+/* Themes are 10 presets, each shipping a dark and a light palette; the
+   mode toggle picks which side is active. Every palette lists the same
+   base colors; translucent tints are derived so the pair stays in sync. */
+const THEMES = [
+  {
+    id: "jet",
+    name: "JetBrains",
+    dark: {
+      bg: "#1e1f22", panel: "#2b2d30", panelAlt: "#313438", border: "#43454a",
+      text: "#dfe1e5", muted: "#9da0a8", accent: "#3574f0", accentDim: "#2b5db8",
+      hover: "#3d4147", selected: "#2e4a78",
+      added: "#499c54", modified: "#dcb167", deleted: "#f75464",
+      renamed: "#4a88c7", conflict: "#d570b6", untracked: "#6a9dc5",
+      hunkBg: "#2c3b50", hunkText: "#7c93b0", addedText: "#b8e6bf", removedText: "#f2b8bd",
+    },
+    light: {
+      bg: "#ffffff", panel: "#f7f8fa", panelAlt: "#edeff2", border: "#d8dbe0",
+      text: "#1e232d", muted: "#6c707e", accent: "#3574f0", accentDim: "#2b5db8",
+      hover: "#e6e9ee", selected: "#d4e2ff",
+      added: "#368746", modified: "#9c6f16", deleted: "#d0404f",
+      renamed: "#3d7fb8", conflict: "#c0439a", untracked: "#4b83b4",
+      hunkBg: "#eef4fb", hunkText: "#61748c", addedText: "#25672f", removedText: "#b03140",
+    },
+  },
+  {
+    id: "dracula",
+    name: "Dracula",
+    dark: {
+      bg: "#282a36", panel: "#2f3141", panelAlt: "#37394a", border: "#44475a",
+      text: "#f8f8f2", muted: "#6272a4", accent: "#bd93f9", accentDim: "#6c4bb5",
+      hover: "#3d4152", selected: "#44475a",
+      added: "#50fa7b", modified: "#f1fa8c", deleted: "#ff5555",
+      renamed: "#8be9fd", conflict: "#ff79c6", untracked: "#719aff",
+      hunkBg: "#3d4157", hunkText: "#b0b8d8", addedText: "#a6f7be", removedText: "#ffb3bf",
+    },
+    light: {
+      bg: "#f8f8f2", panel: "#eeeee6", panelAlt: "#e3e3da", border: "#cfcec5",
+      text: "#282a36", muted: "#6272a4", accent: "#6c4bb5", accentDim: "#583d99",
+      hover: "#e0e0d6", selected: "#d9d6f5",
+      added: "#1f9d55", modified: "#9d7d00", deleted: "#cb3a53",
+      renamed: "#137a99", conflict: "#b33a9b", untracked: "#2b7bb9",
+      hunkBg: "#e8e6dc", hunkText: "#6b6d84", addedText: "#0e6a38", removedText: "#b81f3a",
+    },
+  },
+  {
+    id: "nord",
+    name: "Nord",
+    dark: {
+      bg: "#2e3440", panel: "#3b4252", panelAlt: "#434c5e", border: "#4c566a",
+      text: "#eceff4", muted: "#8b97ab", accent: "#88c0d0", accentDim: "#5e9db5",
+      hover: "#434c5e", selected: "#4c566a",
+      added: "#a3be8c", modified: "#ebcb8b", deleted: "#bf616a",
+      renamed: "#81a1c1", conflict: "#b48ead", untracked: "#8fbcbb",
+      hunkBg: "#3b4a60", hunkText: "#8da2bd", addedText: "#c9dab1", removedText: "#e5aeb4",
+    },
+    light: {
+      bg: "#eceff4", panel: "#e5e9f0", panelAlt: "#d8dee9", border: "#b8c2cf",
+      text: "#2e3440", muted: "#67748a", accent: "#2187a3", accentDim: "#1c6f87",
+      hover: "#dce0e7", selected: "#cfdcea",
+      added: "#5e7f42", modified: "#a07a2c", deleted: "#ab424e",
+      renamed: "#3f76a3", conflict: "#975d84", untracked: "#348b8a",
+      hunkBg: "#dfe5ee", hunkText: "#6e7d8d", addedText: "#3d5c26", removedText: "#96333c",
+    },
+  },
+  {
+    id: "solarized",
+    name: "Solarized",
+    dark: {
+      bg: "#002b36", panel: "#073642", panelAlt: "#0a3f4d", border: "#14505e",
+      text: "#93a1a1", muted: "#586e75", accent: "#268bd2", accentDim: "#1f6fa8",
+      hover: "#124957", selected: "#175061",
+      added: "#859900", modified: "#b58900", deleted: "#dc322f",
+      renamed: "#2aa198", conflict: "#d33682", untracked: "#6c71c4",
+      hunkBg: "#0f4655", hunkText: "#5f7f8a", addedText: "#b3cc4e", removedText: "#ec6a67",
+    },
+    light: {
+      bg: "#fdf6e3", panel: "#eee8d5", panelAlt: "#e3dcc9", border: "#d0c5aa",
+      text: "#586e75", muted: "#93a1a1", accent: "#268bd2", accentDim: "#1f6fa8",
+      hover: "#eae3d0", selected: "#ddd4b9",
+      added: "#6b7a00", modified: "#a57600", deleted: "#dc322f",
+      renamed: "#2aa198", conflict: "#d33682", untracked: "#6c71c4",
+      hunkBg: "#ede5cf", hunkText: "#8b9184", addedText: "#6b7a00", removedText: "#c02c29",
+    },
+  },
+  {
+    id: "one",
+    name: "One",
+    dark: {
+      bg: "#282c34", panel: "#2c313a", panelAlt: "#333842", border: "#3e4451",
+      text: "#abb2bf", muted: "#7f848e", accent: "#61afef", accentDim: "#4b8fd0",
+      hover: "#353b45", selected: "#3a4354",
+      added: "#98c379", modified: "#e5c07b", deleted: "#e06c75",
+      renamed: "#56b6c2", conflict: "#c678dd", untracked: "#d19a66",
+      hunkBg: "#333844", hunkText: "#8b93a5", addedText: "#b3e296", removedText: "#ee9aa1",
+    },
+    light: {
+      bg: "#fafafa", panel: "#f0f0f0", panelAlt: "#e8e8e8", border: "#dcdcdc",
+      text: "#383a42", muted: "#9da0a6", accent: "#4078f2", accentDim: "#3263cd",
+      hover: "#e6e6e6", selected: "#d7e8fb",
+      added: "#50a14f", modified: "#c18401", deleted: "#e45649",
+      renamed: "#0184bc", conflict: "#a626a4", untracked: "#986801",
+      hunkBg: "#edf1f5", hunkText: "#7e848d", addedText: "#35822e", removedText: "#c43d33",
+    },
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    dark: {
+      bg: "#0d1117", panel: "#161b22", panelAlt: "#21262d", border: "#30363d",
+      text: "#e6edf3", muted: "#8b949e", accent: "#2f81f7", accentDim: "#1f6feb",
+      hover: "#232a33", selected: "#284064",
+      added: "#3fb950", modified: "#d29922", deleted: "#f85149",
+      renamed: "#a371f7", conflict: "#db61a2", untracked: "#539bf5",
+      hunkBg: "#1c2c40", hunkText: "#8599b5", addedText: "#7ee787", removedText: "#ffb1ab",
+    },
+    light: {
+      bg: "#ffffff", panel: "#f6f8fa", panelAlt: "#eff2f5", border: "#d0d7de",
+      text: "#1f2328", muted: "#656d76", accent: "#0969da", accentDim: "#0550ae",
+      hover: "#eaedf1", selected: "#d3e5f9",
+      added: "#1a7f37", modified: "#9a6700", deleted: "#cf222e",
+      renamed: "#8250df", conflict: "#bf3989", untracked: "#0969da",
+      hunkBg: "#e6f0fb", hunkText: "#67707c", addedText: "#116329", removedText: "#a40e26",
+    },
+  },
+  {
+    id: "monokai",
+    name: "Monokai",
+    dark: {
+      bg: "#272822", panel: "#31312a", panelAlt: "#3b3a32", border: "#49483e",
+      text: "#f8f8f2", muted: "#8e8e80", accent: "#66d9ef", accentDim: "#47a9bd",
+      hover: "#3e3d32", selected: "#49483e",
+      added: "#a6e22e", modified: "#e6db74", deleted: "#f92672",
+      renamed: "#fd971f", conflict: "#ae81ff", untracked: "#5fb3d3",
+      hunkBg: "#3a3a30", hunkText: "#a6a58f", addedText: "#c9f15e", removedText: "#ff96a4",
+    },
+    light: {
+      bg: "#f9f8f5", panel: "#f0efe8", panelAlt: "#e5e4dc", border: "#cfcec6",
+      text: "#272822", muted: "#75715e", accent: "#1895ad", accentDim: "#0f7a8c",
+      hover: "#e9e8e0", selected: "#d5e8ec",
+      added: "#679b0d", modified: "#9d8700", deleted: "#d61a5e",
+      renamed: "#ca6c0f", conflict: "#6f43d6", untracked: "#3b93c4",
+      hunkBg: "#ebeae2", hunkText: "#8a887c", addedText: "#4c7a05", removedText: "#b3114d",
+    },
+  },
+  {
+    id: "tokyo",
+    name: "Tokyo Night",
+    dark: {
+      bg: "#1a1b26", panel: "#24283b", panelAlt: "#2e3350", border: "#3b4261",
+      text: "#c0caf5", muted: "#565f89", accent: "#7aa2f7", accentDim: "#4f74d6",
+      hover: "#2f334d", selected: "#333f5c",
+      added: "#9ece6a", modified: "#e0af68", deleted: "#f7768e",
+      renamed: "#7dcfff", conflict: "#bb9af7", untracked: "#2ac3de",
+      hunkBg: "#283457", hunkText: "#8b9bd8", addedText: "#c5e78d", removedText: "#ff9baa",
+    },
+    light: {
+      bg: "#e1e2e7", panel: "#eceef4", panelAlt: "#dfe2ea", border: "#c4c8da",
+      text: "#3760bf", muted: "#8992b8", accent: "#2e7de9", accentDim: "#2160c9",
+      hover: "#dadde5", selected: "#cbd8f4",
+      added: "#587539", modified: "#8c6c3e", deleted: "#c93a68",
+      renamed: "#0a7a9c", conflict: "#7847c0", untracked: "#1189ab",
+      hunkBg: "#d9e0f0", hunkText: "#6c78a3", addedText: "#3f5e26", removedText: "#b3264e",
+    },
+  },
+  {
+    id: "catppuccin",
+    name: "Catppuccin",
+    dark: {
+      bg: "#1e1e2e", panel: "#24243c", panelAlt: "#313244", border: "#45475a",
+      text: "#cdd6f4", muted: "#9399b2", accent: "#89b4fa", accentDim: "#6183e0",
+      hover: "#45475a", selected: "#484b64",
+      added: "#a6e3a1", modified: "#f9e2af", deleted: "#f38ba8",
+      renamed: "#94e2d5", conflict: "#cba6f7", untracked: "#89dceb",
+      hunkBg: "#313246", hunkText: "#9aa2c4", addedText: "#c7efc1", removedText: "#fcb3c3",
+    },
+    light: {
+      bg: "#eff1f5", panel: "#e6e9ef", panelAlt: "#dce0e8", border: "#bcc0cc",
+      text: "#4c4f69", muted: "#7d7f98", accent: "#1e66f5", accentDim: "#1552c9",
+      hover: "#dfe1e8", selected: "#ccd9f8",
+      added: "#40a02b", modified: "#a67c00", deleted: "#d20f39",
+      renamed: "#179299", conflict: "#8839ef", untracked: "#04a5e5",
+      hunkBg: "#e0e5ef", hunkText: "#7d8299", addedText: "#2b7a1b", removedText: "#b31840",
+    },
+  },
+  {
+    id: "contrast",
+    name: "High Contrast",
+    dark: {
+      bg: "#000000", panel: "#101010", panelAlt: "#1a1a1a", border: "#555555",
+      text: "#ffffff", muted: "#b0b0b0", accent: "#3d9bff", accentDim: "#0f6ecc",
+      hover: "#2a2a2a", selected: "#17447c",
+      added: "#00c853", modified: "#ffc400", deleted: "#ff5252",
+      renamed: "#66b3ff", conflict: "#ff7ad9", untracked: "#55d9ff",
+      hunkBg: "#122c42", hunkText: "#9cc3e8", addedText: "#80ffa3", removedText: "#ffabab",
+    },
+    light: {
+      bg: "#ffffff", panel: "#f2f2f2", panelAlt: "#e6e6e6", border: "#808080",
+      text: "#000000", muted: "#595959", accent: "#0057d8", accentDim: "#0047a8",
+      hover: "#dcdcdc", selected: "#c3ddfc",
+      added: "#008a2e", modified: "#8f6b00", deleted: "#cc0000",
+      renamed: "#6d28c9", conflict: "#b3008a", untracked: "#007fa8",
+      hunkBg: "#dce8f4", hunkText: "#4d6785", addedText: "#006628", removedText: "#a80000",
+    },
+  },
+];
+
+const SETTINGS_KEY = "gitjet.settings";
+const FONT_MIN = 11;
+const FONT_MAX = 18;
+const FONT_DEFAULT = 13;
+
+/* Expand a base palette into the CSS custom properties the stylesheet uses,
+   deriving the translucent tints so dark/light stay consistent. */
+function applyPalette(palette, dark) {
+  const root = document.documentElement;
+  const set = (name, value) => root.style.setProperty(name, value);
+  set("--bg", palette.bg);
+  set("--panel", palette.panel);
+  set("--panel-alt", palette.panelAlt);
+  set("--border", palette.border);
+  set("--text", palette.text);
+  set("--muted", palette.muted);
+  set("--accent", palette.accent);
+  set("--accent-dim", palette.accentDim);
+  set("--hover", palette.hover);
+  set("--selected", palette.selected);
+  set("--added", palette.added);
+  set("--added-bg", alpha(palette.added, 0.16));
+  set("--modified", palette.modified);
+  set("--modified-bg", alpha(palette.modified, 0.12));
+  set("--deleted", palette.deleted);
+  set("--deleted-bg", alpha(palette.deleted, 0.14));
+  set("--renamed", palette.renamed);
+  set("--conflict", palette.conflict);
+  set("--conflict-bg", alpha(palette.conflict, 0.08));
+  set("--untracked", palette.untracked);
+  set("--diff-hunk-bg", palette.hunkBg);
+  set("--diff-hunk-text", palette.hunkText);
+  set("--diff-hunk-btn-bg", alpha(palette.text, dark ? 0.08 : 0.35));
+  set("--diff-hunk-btn-border", alpha(palette.text, dark ? 0.2 : 0.35));
+  set("--added-text", palette.addedText);
+  set("--removed-text", palette.removedText);
+  set("--split-blank", dark ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.03)");
+  set("--theirs-bg", alpha(palette.renamed, 0.16));
+  set("--accent-bg", alpha(palette.accent, 0.14));
+  set("--fetch-tint", alpha(palette.accent, 0.55));
+  set("--pull-tint", alpha(palette.modified, 0.5));
+  set("--push-tint", alpha(palette.added, 0.55));
+  set("--tag-text", dark ? palette.bg : "#ffffff");
+}
+
+/* "#rrggbb" (or "#rgb") + alpha → rgba() string. */
+function alpha(hex, a) {
+  const raw = hex.replace("#", "");
+  const full = raw.length === 3
+    ? raw.split("").map((c) => c + c).join("")
+    : raw.slice(0, 6);
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/* Persisted appearance: theme preset, light/dark mode, UI font size. */
+const defaultAppearance = { theme: "jet", mode: "dark", fontSize: FONT_DEFAULT };
+let appearance = loadAppearance();
+
+function loadAppearance() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (saved && typeof saved === "object") {
+      return {
+        theme: THEMES.some((t) => t.id === saved.theme) ? saved.theme : defaultAppearance.theme,
+        mode: saved.mode === "light" ? "light" : "dark",
+        fontSize: clampFontSize(saved.fontSize),
+      };
+    }
+  } catch { /* ignore corrupt value */ }
+  return { ...defaultAppearance };
+}
+
+function clampFontSize(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size)) return FONT_DEFAULT;
+  return Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(size)));
+}
+
+function saveAppearance() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(appearance));
+}
+
+function applyAppearance() {
+  const theme = THEMES.find((t) => t.id === appearance.theme) || THEMES[0];
+  const dark = appearance.mode !== "light";
+  applyPalette(dark ? theme.dark : theme.light, dark);
+  const root = document.documentElement;
+  root.style.setProperty("--fs-ui", `${appearance.fontSize}px`);
+  root.style.setProperty("--fs-mono", `${appearance.fontSize - 1}px`);
+  root.style.setProperty("--fs-small", `${appearance.fontSize - 2}px`);
+}
+
+/* Apply before the first paint: the script tag sits at the end of <body>. */
+applyAppearance();
+
 /* ------------------------------------------------------------------ state */
 
 const state = {
@@ -104,6 +410,7 @@ const state = {
   diffMode: "all",
   diffLayout: localStorage.getItem("gitjet.diffLayout") || "unified",
   logFilters: { text: "", author: "", path: "" },
+  branchCache: null,   // last get_branches result for the search filter
   commitDetail: null,   // last loaded CommitDetail DTO
   loadedStatus: null,
   mergeFile: null,      // conflict entry open in the merge editor
@@ -132,10 +439,22 @@ function show(node) { node.classList.remove("hidden"); }
 function hide(node) { node.classList.add("hidden"); }
 
 let statusTimer = null;
+/* Every status-bar message is also kept here (newest last) so the Op Log
+   dialog's "Status messages" tab can show the history, including errors. */
+const messageLog = [];
+let lastStatusMessage = "";
 function setStatus(text, isError) {
   const bar = $("status-bar") || $("status-text").parentElement;
   const node = $("status-text");
   node.textContent = text;
+  /* The bar clips to one line; the hover tooltip carries the full message. */
+  node.title = text;
+  lastStatusMessage = text;
+  messageLog.push({ time: new Date(), text, error: Boolean(isError) });
+  if (messageLog.length > 1000) messageLog.shift();
+  if (!$("oplog-dialog").classList.contains("hidden") && oplogTab === "messages") {
+    renderMessageLog();
+  }
   if (isError) {
     bar.classList.add("error");
     clearTimeout(statusTimer);
@@ -413,8 +732,8 @@ function renderBranchBar(status) {
 
   const behind = branch.behind || 0;
   const ahead = branch.ahead || 0;
-  $("pull-btn").textContent = behind > 0 ? `Pull ↓${behind}` : "Pull";
-  $("push-btn").textContent = ahead > 0 ? `Push ↑${ahead}` : "Push";
+  $("pull-btn").textContent = behind > 0 ? `Pull ↓${behind}` : "Pull ↓";
+  $("push-btn").textContent = ahead > 0 ? `Push ↑${ahead}` : "Push ↑";
   $("stash-button").replaceChildren(
     document.createTextNode("Stash "),
     status.stashCount > 0 ? el("span", "count-badge", status.stashCount) : document.createTextNode(""),
@@ -424,6 +743,8 @@ function renderBranchBar(status) {
 
 function fileRow(entry, section, onSelect) {
   const row = el("div", "file-row");
+  // Deletion shows as `D` in the side's status letter, not in `kind`.
+  if (entry.index === "D" || entry.worktree === "D") row.classList.add("deleted");
   const [dir, base] = splitPath(entry.displayPath);
   const kind = el("span", `file-kind ${KIND_CLASS[entry.kind] || ""}`, KIND_LETTER[entry.kind] || "?");
   const path = el("span", "file-path");
@@ -691,9 +1012,13 @@ function repoMenuItems() {
     { label: `Stash all changes (${stashes} existing)`, hint: "stash push", run: () =>
       runAction("Stash push", () => invoke("stash_push", { message: $("stash-message").value.trim() })) },
     { sep: true },
-    { label: "Fetch ⮁ All", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
+    { label: "Fetch ⮁", run: () => runAction("Fetch", () => invoke("fetch", { all: true })) },
+    { label: "Fetch and prune", hint: "drops gone remote branches", run: () =>
+      runAction("Fetch and prune", () => invoke("fetch", { all: true, prune: true })) },
     { label: "Incoming commits…", hint: `↓ ${behind}`, run: openIncomingDialog },
     { label: "Manage remotes…", run: openRemotesDialog },
+    { label: "Worktrees…", hint: "linked working trees", run: openWorktreesDialog },
+    { label: "Bisect…", hint: "find the breaking commit", run: openBisectDialog },
     { label: "Reset changes (hard)", danger: true, run: async () =>
       { if (await confirmDialog("Hard reset",
           "Reset the current branch to HEAD?\n\nAll uncommitted staged and worktree changes will be deleted.",
@@ -715,22 +1040,123 @@ function rows() {
   const list = $("changes-list");
   list.replaceChildren();
 
-  // While a merge is being resolved, offer an escape hatch next to the list.
+  // While an operation is being resolved, offer an escape hatch next to the
+  // list. Continue stays disabled until every conflict is resolved and
+  // staged — git refuses `--continue` otherwise ("you must edit all merge
+  // conflicts").
+  const unresolved = status.conflicts.length;
+  const operationBanners = [];
   if (status.mergeInProgress) {
-    const abort = el("div", "merge-abort");
-    abort.append(
-      el("span", "merge-abort-text", "Merging — resolve conflicts, stage and commit."),
+    operationBanners.push({
+      text: "Merging — resolve conflicts, stage and commit.",
+      buttons: [{ label: "Abort merge", action: "merge_abort", confirm: {
+        title: "Abort the merge?", message: "The pre-merge state will be restored.",
+        ok: "Abort", label: "Abort merge",
+      } }],
+    });
+  }
+  if (status.rebaseInProgress) {
+    operationBanners.push({
+      text: unresolved > 0
+        ? `Rebasing — resolve ${unresolved} conflict${unresolved === 1 ? "" : "s"}, stage them, then Continue.`
+        : "Rebasing — all conflicts staged; press Continue to resume.",
+      continueable: true,
+      buttons: [
+        {
+          label: "Skip commit", action: "rebase_skip", label2: "Skip rebase commit",
+          confirm: {
+            title: "Skip the stopped commit?",
+            message: "The commit the rebase stopped on is dropped from the replayed history.",
+            ok: "Skip", label: "Skip rebase commit",
+          },
+        },
+        {
+          label: "Abort", action: "rebase_abort", label2: "Abort rebase",
+          confirm: {
+            title: "Abort the rebase?", message: "The pre-rebase state will be restored.",
+            ok: "Abort", label: "Abort rebase",
+          },
+        },
+      ],
+    });
+  }
+  if (status.cherryPickInProgress) {
+    operationBanners.push({
+      text: unresolved > 0
+        ? `Cherry-picking — resolve ${unresolved} conflict${unresolved === 1 ? "" : "s"}, stage them, then Continue.`
+        : "Cherry-picking — press Continue to create the commit.",
+      continueable: true,
+      buttons: [{
+        label: "Abort", action: "cherry_pick_abort", label2: "Abort cherry-pick",
+        confirm: {
+          title: "Abort the cherry-pick?", message: "The pre-cherry-pick state will be restored.",
+          ok: "Abort", label: "Abort cherry-pick",
+        },
+      }],
+    });
+  }
+  if (status.revertInProgress) {
+    operationBanners.push({
+      text: unresolved > 0
+        ? `Reverting — resolve ${unresolved} conflict${unresolved === 1 ? "" : "s"}, stage them, then Continue.`
+        : "Reverting — press Continue to create the commit.",
+      continueable: true,
+      buttons: [{
+        label: "Abort", action: "revert_abort", label2: "Abort revert",
+        confirm: {
+          title: "Abort the revert?", message: "The pre-revert state will be restored.",
+          ok: "Abort", label: "Abort revert",
+        },
+      }],
+    });
+  }
+  for (const banner of operationBanners) {
+    const box = el("div", "merge-abort");
+    box.append(el("span", "merge-abort-text", banner.text));
+    if (banner.continueable) {
+      const cont = el("button", "btn small primary", "Continue");
+      const command = status.rebaseInProgress ? "rebase_continue"
+        : status.cherryPickInProgress ? "cherry_pick_continue" : "revert_continue";
+      const label = status.rebaseInProgress ? "Continue rebase"
+        : status.cherryPickInProgress ? "Continue cherry-pick" : "Continue revert";
+      cont.disabled = unresolved > 0;
+      if (unresolved > 0) {
+        cont.title = `Resolve and stage all ${unresolved} conflict(s) first — git refuses to continue otherwise.`;
+      }
+      cont.addEventListener("click", () =>
+        void continueOperation(label, command, cont));
+      box.append(cont);
+    }
+    for (const spec of banner.buttons) {
+      const btn = el("button", "btn small", spec.label);
+      btn.addEventListener("click", async () => {
+        if (spec.confirm && !(await confirmDialog(spec.confirm.title, spec.confirm.message,
+            { okLabel: spec.confirm.ok }))) return;
+        void runAction(spec.confirm ? spec.confirm.label : spec.label2,
+          () => invoke(spec.action), true, btn);
+      });
+      box.append(btn);
+    }
+    list.append(box);
+  }
+
+  // While bisecting, offer the escape hatch next to the list; good/bad marks
+  // live in the Log context menu and the Bisect dialog.
+  if (status.bisectInProgress) {
+    const banner = el("div", "merge-abort");
+    banner.append(
+      el("span", "merge-abort-text", "Bisecting — mark commits good or bad from the Log."),
       (() => {
-        const btn = el("button", "btn small", "Abort merge");
-        btn.addEventListener("click", async () => {
-          if (!(await confirmDialog("Abort the merge?", "The pre-merge state will be restored.",
-            { okLabel: "Abort" }))) return;
-          void runAction("Abort merge", () => invoke("merge_abort"), true, btn);
+        const end = el("button", "btn small", "End bisect");
+        end.addEventListener("click", async () => {
+          if (!(await confirmDialog("End the bisect session?",
+              "The original HEAD is restored.", { okLabel: "End bisect" }))) return;
+          void runAction("End bisect", () => invoke("bisect_reset"), true, end);
         });
-        return btn;
+        return end;
       })()
     );
-    list.append(abort);
+    list.append(banner);
   }
 
   const sections = [];
@@ -1256,6 +1682,7 @@ function renderLog(commits, from = 0) {
       const isMerge = (commit.parents || []).length > 1;
       const last = state.loadedStatus && state.loadedStatus.lastCommit;
       const isHead = Boolean(last && last.hash === commit.hash);
+      const bisecting = Boolean(state.loadedStatus && state.loadedStatus.bisectInProgress);
       openContextMenu(event, [
         { head: commit.subject },
         { label: "Show diff", hint: commit.shortHash, run: () => selectCommit(commit, node) },
@@ -1265,6 +1692,18 @@ function renderLog(commits, from = 0) {
           run: () => checkoutCommit(commit.hash, commit.subject),
         },
         { sep: true },
+        ...(bisecting ? [
+          { label: "Mark good (bisect)", run: () =>
+            void runAction(`Mark ${commit.shortHash} good`, () =>
+              invoke("bisect_mark", { kind: "good", sha: commit.hash })) },
+          { label: "Mark bad (bisect)", run: () =>
+            void runAction(`Mark ${commit.shortHash} bad`, () =>
+              invoke("bisect_mark", { kind: "bad", sha: commit.hash })) },
+          { label: "Skip this commit (bisect)", run: () =>
+            void runAction(`Skip ${commit.shortHash}`, () =>
+              invoke("bisect_mark", { kind: "skip", sha: commit.hash })) },
+          { sep: true },
+        ] : []),
         ...(isMerge ? [] : [
           { label: "Cherry-pick commit", run: () =>
             runHistoryAction("Cherry-pick", () => invoke("cherry_pick", { sha: commit.hash })) },
@@ -1477,6 +1916,32 @@ function promptDialog(title, placeholder, initial, mode, onSubmit) {
   input.select();
 }
 
+/* Continues a stopped operation (rebase / cherry-pick / revert). Hitting
+   the next conflicting commit is not a failure — a multi-commit rebase
+   stops once per conflict — so it is reported as progress and the views
+   refresh, bringing the banner back with the new conflict list. */
+async function continueOperation(label, command, btn) {
+  await guardButton(btn, async () => {
+    let failure = null;
+    try {
+      setStatus(`${label}…`);
+      const output = await invoke(command);
+      setStatus(truncate(String(output || `${label} done`).trim(), 3));
+    } catch (error) {
+      const message = errorText(error);
+      if (/could not apply|could not revert|CONFLICT/.test(message)) {
+        // The operation stopped on the next conflicting commit: the refresh
+        // below re-renders the banner with the new conflict list.
+        setStatus(truncate(message, 6));
+      } else {
+        failure = `${label} failed: ${message}`;
+      }
+    }
+    await Promise.all([refreshStatus(), refreshLog(), refreshBranches()]);
+    if (failure) setStatus(failure, true);
+  });
+}
+
 function closeDialogs() {
   // A pending confirmation counts as cancelled (same as the native confirm).
   resolveConfirm(false);
@@ -1488,10 +1953,64 @@ function closeDialogs() {
   for (const id of [
     "pull-dialog", "push-dialog", "compare-dialog", "prompt-dialog",
     "incoming-dialog", "remotes-dialog", "message-dialog", "clone-dialog",
-    "oplog-dialog", "confirm-dialog",
+    "oplog-dialog", "confirm-dialog", "bisect-dialog", "worktrees-dialog",
+    "settings-dialog",
   ]) {
     hide($(id));
   }
+}
+
+/* ------------------------------------------------- appearance settings UI */
+
+function openSettingsDialog() {
+  renderSettingsDialog();
+  show($("settings-dialog"));
+}
+
+function renderSettingsDialog() {
+  const activePalette = (theme) => theme[appearance.mode === "light" ? "light" : "dark"];
+
+  /* Theme grid: each preset shows a live preview of its palette. */
+  const grid = $("theme-grid");
+  grid.textContent = "";
+  for (const theme of THEMES) {
+    const pal = activePalette(theme);
+    const button = el("button", "theme-swatch" + (theme.id === appearance.theme ? " active" : ""));
+    button.type = "button";
+    button.title = `${theme.name} — ${appearance.mode === "light" ? "light" : "dark"} palette`;
+    const preview = el("span", "theme-preview");
+    for (const color of [pal.bg, pal.panel, pal.accent, pal.added, pal.modified, pal.deleted]) {
+      const dot = el("span", "theme-dot");
+      dot.style.background = color;
+      preview.appendChild(dot);
+    }
+    button.appendChild(preview);
+    button.appendChild(el("span", "theme-name", theme.name));
+    button.addEventListener("click", () => {
+      appearance.theme = theme.id;
+      saveAppearance();
+      applyAppearance();
+      renderSettingsDialog();
+    });
+    grid.appendChild(button);
+  }
+
+  /* Dark / light toggle for the selected preset. */
+  for (const button of document.querySelectorAll("[data-mode-toggle]")) {
+    button.classList.toggle("active", button.dataset.modeToggle === appearance.mode);
+  }
+
+  /* Font size stepper. */
+  $("font-size-value").textContent = `${appearance.fontSize} px`;
+  $("font-dec").disabled = appearance.fontSize <= FONT_MIN;
+  $("font-inc").disabled = appearance.fontSize >= FONT_MAX;
+}
+
+function changeFontSize(delta) {
+  appearance.fontSize = clampFontSize(appearance.fontSize + delta);
+  saveAppearance();
+  applyAppearance();
+  renderSettingsDialog();
 }
 
 /* Promise-based confirmation dialog replacing the native window.confirm:
@@ -1758,7 +2277,7 @@ function mergeButton(label, run) {
 }
 
 /* One grid row per segment keeps all three panes aligned; scrolling the
-   body scrolls them together, like JetBrains' merged-result layout. */
+   body scrolls them together, merged-result layout style. */
 function renderMergeEditor() {
   const body = $("merge-body");
   body.replaceChildren();
@@ -1878,6 +2397,68 @@ async function doMergeIntoCurrent(name, noFF) {
     }
   }
   await Promise.all([refreshStatus(), refreshBranches()]);
+}
+
+/* Name of the checked-out branch, null while detached or before the first
+   status load. */
+function currentBranchName() {
+  const status = state.loadedStatus;
+  if (!status || !status.branch || status.branch.detached) return null;
+  return status.branch.name || null;
+}
+
+/* "Rebase '<current>' onto '<selected>'": replays the
+   current branch's unique commits on top of the selected branch, without
+   checking anything out (git rebase <selected>). The current branch's
+   history is rewritten; if it tracks a remote it diverges and a later
+   push needs --force-with-lease. */
+async function doRebaseCurrentOnto(branch) {
+  const current = currentBranchName();
+  if (!current || branch.current) {
+    setStatus("Rebase needs a checked-out branch to rewrite.", true);
+    return;
+  }
+  const upstream = state.loadedStatus && state.loadedStatus.branch
+    ? state.loadedStatus.branch.upstream
+    : null;
+  const tracked = upstream
+    ? `It tracks ${upstream}, so afterwards it will diverge from the remote and pushing needs Force push (--force-with-lease).`
+    : "";
+  if (!(await confirmDialog(`Rebase '${current}' onto '${branch.name}'?`,
+      `The commits that only ${current} has are replayed on top of ${branch.name}: ${current} is rewritten, ${branch.name} stays untouched. ${tracked}\n\n` +
+      `  ${branch.name}: …E─F                       (unchanged)\n` +
+      `  ${current}:     …A─B─C  →  …E─F─A'─B'─C'   (rewritten)\n\n` +
+      "Requires a clean working tree; conflicts stop the rebase — resolve, stage, then Continue under Local Changes.",
+      { okLabel: "Rebase" }))) return;
+  await runHistoryAction(`Rebase '${current}' onto '${branch.name}'`, () =>
+    invoke("rebase_onto", { target: branch.name }));
+  await Promise.all([refreshLog(false), refreshBranches()]);
+}
+
+/* "Checkout and Rebase onto Current": check the selected
+   branch out and replay it on top of the previously current branch. */
+async function doCheckoutAndRebaseOntoCurrent(branch) {
+  const current = currentBranchName();
+  if (!current || branch.current) {
+    setStatus("Rebase needs a checked-out branch to rebase onto.", true);
+    return;
+  }
+  if (!(await confirmDialog(`Check out ${branch.name} and rebase onto ${current}?`,
+      `${branch.name} is checked out and the commits that only it has are replayed on top of ${current}: ${branch.name} is rewritten, ${current} stays untouched.\n\n` +
+      `  ${current}:   …X─Y─Z                     (unchanged)\n` +
+      `  ${branch.name}: …P─Q  →  …X─Y─Z─P'─Q'   (rewritten)\n\n` +
+      "Requires a clean working tree; conflicts stop the rebase — resolve, stage, then Continue under Local Changes.",
+      { okLabel: "Checkout and Rebase" }))) return;
+  try {
+    setStatus(`Checking out ${branch.name}…`);
+    await invoke("switch_branch", { branch: branch.name });
+  } catch (error) {
+    setStatus(`Checkout failed: ${errorText(error)}`, true);
+    return;
+  }
+  await runHistoryAction(`Rebase ${branch.name} onto ${current}`, () =>
+    invoke("rebase_onto", { target: current }));
+  await Promise.all([refreshLog(false), refreshBranches()]);
 }
 
 async function deleteBranch(branch, force) {
@@ -2183,19 +2764,179 @@ async function submitAddRemote() {
 async function submitPullDialog() {
   const strategy = document.querySelector('input[name="pull-strategy"]:checked');
   const ffOnly = strategy ? strategy.value === "ff" : false;
+  const rebase = strategy ? strategy.value === "rebase" : false;
   $("pull-error").textContent = "";
   try {
-    const output = await invoke("pull_options", {
+    setStatus("Pulling…");
+    await invoke("pull_options", {
       remote: $("pull-remote").value.trim() || null,
       branch: $("pull-branch").value.trim() || null,
       ffOnly,
+      rebase,
     });
     hide($("pull-dialog"));
-    setStatus(truncate(String(output || "Pull complete"), 3));
+    /* The raw git output stays in the Op Log; the status bar stays quiet. */
+    setStatus("Pull done");
     await Promise.all([refreshStatus(), refreshLog(false), refreshBranches()]);
   } catch (error) {
     $("pull-error").textContent = errorText(error);
   }
+}
+
+/* --------------------------------------------------------------- bisect dialog */
+
+/* Starts, drives and ends a git bisect session. Good/bad/skip marks apply to
+   HEAD by default; the Log context menu can mark any commit explicitly. */
+async function openBisectDialog() {
+  const dialog = $("bisect-dialog");
+  $("bisect-error").textContent = "";
+  $("bisect-bad").value = "HEAD";
+  $("bisect-good").value = "";
+  $("bisect-log").textContent = "";
+  show(dialog);
+  await refreshBisectDialog();
+}
+
+async function refreshBisectDialog() {
+  const bisecting = Boolean(state.loadedStatus && state.loadedStatus.bisectInProgress);
+  const start = $("bisect-start-row");
+  const marks = $("bisect-marks");
+  start.classList.toggle("hidden", bisecting);
+  marks.classList.toggle("hidden", !bisecting);
+  if (!bisecting) {
+    $("bisect-log").textContent = "No bisect session running.";
+    return;
+  }
+  try {
+    $("bisect-log").textContent = await invoke("bisect_log");
+  } catch (error) {
+    $("bisect-error").textContent = errorText(error);
+  }
+}
+
+async function startBisect() {
+  $("bisect-error").textContent = "";
+  try {
+    await invoke("bisect_start", {
+      bad: $("bisect-bad").value.trim() || null,
+      good: $("bisect-good").value.trim() || null,
+    });
+    setStatus("Bisect started — mark commits good or bad (Log context menu).");
+    await refreshStatus();
+    await refreshBisectDialog();
+  } catch (error) {
+    $("bisect-error").textContent = errorText(error);
+  }
+}
+
+async function bisectMark(kind) {
+  $("bisect-error").textContent = "";
+  try {
+    const output = await invoke("bisect_mark", { kind, sha: null });
+    await refreshStatus();
+    const stillBisecting = Boolean(state.loadedStatus && state.loadedStatus.bisectInProgress);
+    if (stillBisecting) {
+      setStatus(truncate(String(output || `Marked ${kind}`), 3));
+    } else {
+      // The session ended: git printed the first bad commit and reset itself.
+      setStatus(`Bisect complete: ${truncate(String(output || ""), 4)}`);
+    }
+    await refreshBisectDialog();
+    await refreshLog(false);
+  } catch (error) {
+    $("bisect-error").textContent = errorText(error);
+  }
+}
+
+async function endBisect() {
+  if (!(await confirmDialog("End the bisect session?",
+      "The original HEAD is restored.", { okLabel: "End bisect" }))) return;
+  await runAction("End bisect", () => invoke("bisect_reset"));
+  await refreshStatus();
+  await refreshBisectDialog();
+}
+
+/* ------------------------------------------------------------ worktrees dialog */
+
+async function openWorktreesDialog() {
+  const dialog = $("worktrees-dialog");
+  $("worktrees-error").textContent = "";
+  $("worktree-path").value = "";
+  $("worktree-branch").value = "";
+  $("worktree-start-ref").value = "";
+  show(dialog);
+  await refreshWorktrees();
+}
+
+async function refreshWorktrees() {
+  const list = $("worktrees-list");
+  list.replaceChildren(el("div", "empty-hint", "Loading worktrees…"));
+  try {
+    const worktrees = await invoke("get_worktrees");
+    list.replaceChildren();
+    for (const worktree of worktrees) {
+      const row = el("div", "file-row");
+      const label = worktree.bare
+        ? `${worktree.path} (bare)`
+        : worktree.branch
+          ? `${worktree.path} → ${worktree.branch}`
+          : `${worktree.path} (detached)`;
+      row.append(
+        el("span", "file-kind", worktree.bare ? "◆" : worktree.branch ? "●" : "○"),
+        el("span", "file-path worktree-path-label", label),
+        el("span", "commit-meta", worktree.head)
+      );
+      row.title = worktree.path;
+      if (!worktree.bare) {
+        const remove = el("span", "file-action", "remove");
+        remove.title = "Remove this worktree";
+        remove.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          if (!(await confirmDialog(`Remove worktree at ${worktree.path}?`,
+              "Uncommitted changes in that worktree are lost.",
+              { danger: true, okLabel: "Remove" }))) return;
+          await runAction(`Remove worktree ${worktree.path}`, () =>
+            invoke("remove_worktree", { path: worktree.path }), true, remove);
+          await refreshWorktrees();
+        });
+        row.append(remove);
+      }
+      list.append(row);
+    }
+    if (worktrees.length === 0) list.append(el("div", "empty-hint", "No worktrees"));
+  } catch (error) {
+    list.replaceChildren();
+    $("worktrees-error").textContent = errorText(error);
+  }
+}
+
+async function addWorktree() {
+  $("worktrees-error").textContent = "";
+  const path = $("worktree-path").value.trim();
+  if (!path) {
+    $("worktrees-error").textContent = "Enter a folder path for the new worktree.";
+    return;
+  }
+  try {
+    await invoke("add_worktree", {
+      path,
+      newBranch: $("worktree-branch").value.trim() || null,
+      startRef: $("worktree-start-ref").value.trim() || null,
+    });
+    $("worktree-path").value = "";
+    $("worktree-branch").value = "";
+    $("worktree-start-ref").value = "";
+    setStatus(`Worktree added at ${path}`);
+    await refreshWorktrees();
+    await refreshBranches();
+  } catch (error) {
+    $("worktrees-error").textContent = errorText(error);
+  }
+}
+
+async function pruneWorktrees() {
+  await runAction("Prune worktrees", () => invoke("prune_worktrees"));
+  await refreshWorktrees();
 }
 
 /* --------------------------------------------------------------- tags menu */
@@ -2236,9 +2977,19 @@ async function refreshTags() {
 
 async function refreshBranches() {
   if (!state.root) return;
-  const branches = await invoke("get_branches");
-  renderBranchList($("local-branches"), branches.local);
-  renderBranchList($("remote-branches"), branches.remote);
+  state.branchCache = await invoke("get_branches");
+  renderBranchLists();
+}
+
+/* Re-renders both branch lists from the cached get_branches result, filtered
+   by the menu's search box (case-insensitive substring). Typing re-renders
+   without touching the backend again. */
+function renderBranchLists() {
+  const query = $("branch-search").value.trim().toLowerCase();
+  const cache = state.branchCache || { local: [], remote: [] };
+  const match = (branch) => !query || branch.name.toLowerCase().includes(query);
+  renderBranchList($("local-branches"), cache.local.filter(match), Boolean(query));
+  renderBranchList($("remote-branches"), cache.remote.filter(match), Boolean(query));
 }
 
 /* Switch to a local branch. With uncommitted changes a prompt first warns
@@ -2258,10 +3009,28 @@ async function switchToBranch(branch) {
   await runAction(`Switch to ${branch.name}`, () => invoke("switch_branch", { branch: branch.name }));
 }
 
-function renderBranchList(container, branches) {
+/* Check out a remote branch: an existing local branch with
+   the same name is switched to, otherwise a new local branch tracking the
+   remote one is created. */
+async function checkoutRemoteBranch(branch) {
+  const status = state.loadedStatus;
+  const dirty = Boolean(status) &&
+    status.conflicts.length + status.staged.length + status.unstaged.length +
+      status.untracked.length > 0;
+  if (dirty) {
+    const ok = await confirmDialog(`Check out ${branch.name}?`,
+      "You have uncommitted changes. Git will try to carry them over; files that conflict block the checkout.",
+      { okLabel: "Check out" });
+    if (!ok) return;
+  }
+  await runAction(`Checkout ${branch.name}`, () =>
+    invoke("checkout_remote_branch", { name: branch.name }));
+}
+
+function renderBranchList(container, branches, filtering = false) {
   container.replaceChildren();
   if (branches.length === 0) {
-    container.append(el("div", "empty-hint", "none"));
+    container.append(el("div", "empty-hint", filtering ? "No matching branches" : "none"));
     return;
   }
   for (const branch of branches) {
@@ -2269,6 +3038,7 @@ function renderBranchList(container, branches) {
     const marker = el("span", `file-kind ${branch.current ? "k-added" : ""}`, branch.current ? "●" : "○");
     const label = el("span", "file-path", branch.name);
     if (!branch.current && !branch.remote) label.title = "Click to switch to this branch";
+    if (branch.remote) label.title = "Click to check out this remote branch";
     row.append(marker, label);
     const info = [];
     if (branch.upstream) info.push(branch.upstream);
@@ -2281,14 +3051,19 @@ function renderBranchList(container, branches) {
     if (!branch.current && !branch.remote) {
       row.classList.add("switchable");
     } else if (branch.remote) {
-      action2(row, branch);
+      row.classList.add("switchable");
     }
     row.addEventListener("click", async () => {
-      if (branch.current || branch.remote) return;
+      if (branch.current) return;
       hide($("branch-menu"));
+      if (branch.remote) {
+        await checkoutRemoteBranch(branch);
+        return;
+      }
       await switchToBranch(branch);
     });
     row.addEventListener("contextmenu", (event) => {
+      const current = currentBranchName();
       const items = [{ head: branch.name }];
       if (!branch.current && !branch.remote) {
         items.push({ label: `Switch to ${branch.name}`, hint: branch.hash, run: async () => {
@@ -2299,12 +3074,31 @@ function renderBranchList(container, branches) {
           hide($("branch-menu"));
           void doMergeIntoCurrent(branch.name, false);
         } });
+        /* The item names the branch that gets REWRITTEN
+           first. Rebase '<current>' onto '<selected>' replays the current
+           branch's unique commits on top of the selected branch. */
+        if (current) {
+          items.push({ label: `Rebase '${current}' onto '${branch.name}'`,
+            hint: "rewrites current branch", run: () => {
+            hide($("branch-menu"));
+            void doRebaseCurrentOnto(branch);
+          } });
+          items.push({ label: "Checkout and Rebase onto Current",
+            hint: `rewrites ${branch.name}`, run: () => {
+            hide($("branch-menu"));
+            void doCheckoutAndRebaseOntoCurrent(branch);
+          } });
+        }
         items.push({ label: "Checkout as New Branch from here…", run: () => {
           hide($("branch-menu"));
           void newBranchFrom(branch);
         } });
       }
       if (branch.remote) {
+        items.push({ label: `Checkout ${branch.name}`, hint: "creates a local branch if needed", run: async () => {
+          hide($("branch-menu"));
+          await checkoutRemoteBranch(branch);
+        } });
         items.push({ label: "Checkout as New Local Branch…", run: () => {
           hide($("branch-menu"));
           void newBranchFrom(branch);
@@ -2313,6 +3107,13 @@ function renderBranchList(container, branches) {
           hide($("branch-menu"));
           void doMergeIntoCurrent(branch.name, false);
         } });
+        if (current) {
+          items.push({ label: `Rebase '${current}' onto '${branch.name}'`,
+            hint: "rewrites current branch", run: () => {
+            hide($("branch-menu"));
+            void doRebaseCurrentOnto(branch);
+          } });
+        }
       }
       items.push({ label: "Compare with Current", run: () => {
         hide($("branch-menu"));
@@ -2361,48 +3162,88 @@ function renderBranchList(container, branches) {
 }
 
 /* Copy a remote branch name to the clipboard (the "…" action). */
-function action2(row, branch) {
-  const action = el("span", "file-action", "⧉");
-  action.title = "Copy branch name";
-  action.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void copyText(branch.name);
-  });
-  row.append(action);
-}
+// function action2(row, branch) {
+//   const action = el("span", "file-action", "⧉");
+//   action.title = "Copy branch name";
+//   action.addEventListener("click", (event) => {
+//     event.stopPropagation();
+//     void copyText(branch.name);
+//   });
+//   row.append(action);
+// }
 
 /* ------------------------------------------------------------- op log */
 
-/* Viewer for the last 1000 git commands Git Jet ran (this session only). */
+/* Which tab the Op Log dialog shows: git commands or status messages. */
+let oplogTab = "commands";
+
+/* Viewer for the last 1000 git commands Git Jet ran (this session only),
+   plus a second tab with every status-bar message, errors included. */
 async function openOpLog() {
   try {
-    renderOpLog(await invoke("git_op_log"));
+    await renderOpLog();
     show($("oplog-dialog"));
   } catch (error) {
     setStatus(`Op log failed: ${errorText(error)}`, true);
   }
 }
 
-function renderOpLog(lines) {
-  $("oplog-count").textContent = lines.length ? `${lines.length} line(s)` : "";
-  const list = $("oplog-list");
+async function renderOpLog() {
+  const lines = oplogTab === "commands" ? await invoke("git_op_log") : null;
+  $("oplog-list").classList.toggle("hidden", oplogTab !== "commands");
+  $("oplog-messages").classList.toggle("hidden", oplogTab !== "messages");
+  for (const button of document.querySelectorAll("[data-oplog-tab]")) {
+    button.classList.toggle("active", button.dataset.oplogTab === oplogTab);
+  }
+  $("oplog-hint").textContent = oplogTab === "commands"
+    ? "Newest first — every git command Git Jet ran this session, with its outcome and duration. Kept in memory only (last 1000)."
+    : "Newest first — every status-bar message this session, errors highlighted. Kept in memory only (last 1000).";
+  if (oplogTab === "commands") {
+    $("oplog-count").textContent = lines.length ? `${lines.length} line(s)` : "";
+    const list = $("oplog-list");
+    list.replaceChildren();
+    if (lines.length === 0) {
+      list.append(el("div", "empty-hint", "No git operations yet — everything Git Jet runs shows up here."));
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    for (let index = lines.length - 1; index >= 0; index--) {
+      fragment.append(el("div", "oplog-line", lines[index]));
+    }
+    list.append(fragment);
+  } else {
+    renderMessageLog();
+  }
+}
+
+function renderMessageLog() {
+  $("oplog-count").textContent = messageLog.length ? `${messageLog.length} message(s)` : "";
+  const list = $("oplog-messages");
   list.replaceChildren();
-  if (lines.length === 0) {
-    list.append(el("div", "empty-hint", "No git operations yet — everything Git Jet runs shows up here."));
+  if (messageLog.length === 0) {
+    list.append(el("div", "empty-hint", "No messages yet — the status bar history shows up here."));
     return;
   }
   const fragment = document.createDocumentFragment();
-  for (let index = lines.length - 1; index >= 0; index--) {
-    fragment.append(el("div", "oplog-line", lines[index]));
+  for (let index = messageLog.length - 1; index >= 0; index--) {
+    const entry = messageLog[index];
+    const time = entry.time.toLocaleTimeString([], { hour12: false });
+    fragment.append(el("div", `oplog-line${entry.error ? " oplog-error" : ""}`,
+      `${time}  ${entry.text}`));
   }
   list.append(fragment);
 }
 
 async function clearOpLog() {
   try {
-    await invoke("clear_git_op_log");
-    renderOpLog([]);
-    setStatus("Operation log cleared");
+    if (oplogTab === "commands") {
+      await invoke("clear_git_op_log");
+    } else {
+      messageLog.length = 0;
+      renderMessageLog();
+    }
+    await renderOpLog();
+    setStatus("Log cleared");
   } catch (error) {
     setStatus(`Clear failed: ${errorText(error)}`, true);
   }
@@ -2534,11 +3375,70 @@ function boot() {
   $("remotes-close").addEventListener("click", () => hide($("remotes-dialog")));
   $("oplog-btn").addEventListener("click", () => void openOpLog());
   $("oplog-close").addEventListener("click", () => hide($("oplog-dialog")));
-  $("oplog-clear").addEventListener("click", () => void clearOpLog());
+  $("oplog-clear").addEventListener("click", () => void guardButton($("oplog-clear"), clearOpLog));
+
+  /* appearance settings (live-applied theme / mode / font size) */
+  $("settings-btn").addEventListener("click", openSettingsDialog);
+  $("settings-close").addEventListener("click", () => hide($("settings-dialog")));
+  $("settings-reset").addEventListener("click", () => {
+    appearance = { ...defaultAppearance };
+    saveAppearance();
+    applyAppearance();
+    renderSettingsDialog();
+  });
+  for (const button of document.querySelectorAll("[data-mode-toggle]")) {
+    button.addEventListener("click", () => {
+      appearance.mode = button.dataset.modeToggle;
+      saveAppearance();
+      applyAppearance();
+      renderSettingsDialog();
+    });
+  }
+  $("font-dec").addEventListener("click", () => changeFontSize(-1));
+  $("font-inc").addEventListener("click", () => changeFontSize(1));
+  for (const button of document.querySelectorAll("[data-oplog-tab]")) {
+    button.addEventListener("click", () => {
+      oplogTab = button.dataset.oplogTab;
+      void renderOpLog().catch((error) => setStatus(`Op log failed: ${errorText(error)}`, true));
+    });
+  }
+
+  /* status bar: copy the current message (useful for long git errors) */
+  $("status-copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(lastStatusMessage);
+      setStatus(lastStatusMessage ? "Status message copied" : "Nothing to copy");
+    } catch (error) {
+      setStatus(`Copy failed: ${errorText(error)}`, true);
+    }
+  });
   $("remote-add").addEventListener("click", () => void guardButton($("remote-add"), submitAddRemote));
   for (const id of ["remote-name", "remote-url"]) {
     $(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") $("remote-add").click();
+    });
+  }
+
+  /* bisect */
+  $("bisect-start-btn").addEventListener("click", () => void guardButton($("bisect-start-btn"), startBisect));
+  $("bisect-good-btn").addEventListener("click", () => void guardButton($("bisect-good-btn"), () => bisectMark("good")));
+  $("bisect-bad-btn").addEventListener("click", () => void guardButton($("bisect-bad-btn"), () => bisectMark("bad")));
+  $("bisect-skip-btn").addEventListener("click", () => void guardButton($("bisect-skip-btn"), () => bisectMark("skip")));
+  $("bisect-reset-btn").addEventListener("click", () => void guardButton($("bisect-reset-btn"), endBisect));
+  $("bisect-close").addEventListener("click", () => hide($("bisect-dialog")));
+  for (const id of ["bisect-bad", "bisect-good"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("bisect-start-btn").click();
+    });
+  }
+
+  /* worktrees */
+  $("worktree-add-btn").addEventListener("click", () => void guardButton($("worktree-add-btn"), addWorktree));
+  $("worktree-prune-btn").addEventListener("click", () => void guardButton($("worktree-prune-btn"), pruneWorktrees));
+  $("worktrees-close").addEventListener("click", () => hide($("worktrees-dialog")));
+  for (const id of ["worktree-path", "worktree-branch", "worktree-start-ref"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("worktree-add-btn").click();
     });
   }
 
@@ -2663,7 +3563,10 @@ function boot() {
       const rect = button.getBoundingClientRect();
       menu.style.left = rect.left + "px";
       menu.style.top = rect.bottom + 4 + "px";
+      // Start each open with the full list and a focused search box.
+      $("branch-search").value = "";
       show(menu);
+      $("branch-search").focus();
     });
   });
   document.addEventListener("click", (event) => {
@@ -2698,15 +3601,21 @@ function boot() {
     }
   });
 
-  $("create-branch-btn").addEventListener("click", async () => {
-    const name = $("new-branch-name").value.trim();
-    if (!name) return;
-    await runAction(`New branch ${name}`, () => invoke("create_branch", { name }), true, $("create-branch-btn"));
-    $("new-branch-name").value = "";
-    hide($("branch-menu"));
+  /* The menu's input is a search box: typing filters both branch lists live.
+     New branches are created from the stylized prompt dialog via ＋ New. */
+  $("branch-search").addEventListener("input", renderBranchLists);
+  $("branch-search").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide($("branch-menu"));
   });
-  $("new-branch-name").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") $("create-branch-btn").click();
+  $("new-branch-btn").addEventListener("click", () => {
+    // Seed the prompt with the search text so filtering then ＋ New flows
+    // straight into creating the typed name.
+    const suggested = $("branch-search").value.trim();
+    hide($("branch-menu"));
+    promptDialog("New branch", "Branch name, e.g. feature/login", suggested, "", async (name) => {
+      await runAction(`New branch ${name}`, () => invoke("create_branch", { name }));
+      await refreshBranches();
+    });
   });
 
   $("stash-button").addEventListener("click", async () => {
@@ -2773,9 +3682,25 @@ function boot() {
     );
   }
 
+  /* Swallow WebView2's page-reload accelerators (F5 / Ctrl+R) before the
+     browser acts on them: this is a desktop app and a stray refresh would
+     wipe in-memory state. F5 stays wired to the in-app refresh below.
+     Devtools are turned off natively in main.rs, so F12 needs no guard. */
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "F5" ||
+        (event.ctrlKey && !event.shiftKey && !event.altKey &&
+         (event.key === "r" || event.key === "R"))) {
+      event.preventDefault();
+    }
+  }, true);
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "F5") void guardButton($("refresh-btn"), refreshAll);
     if (event.key === "Escape") closeDialogs();
+    if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+      event.preventDefault();
+      if ($("settings-dialog").classList.contains("hidden")) openSettingsDialog();
+    }
   });
 
   /* Auto refresh: while the window is focused, poll a cheap filesystem

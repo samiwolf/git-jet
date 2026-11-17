@@ -231,6 +231,11 @@ pub struct StatusReport {
     pub cherry_pick_in_progress: bool,
     /// `REVERT_HEAD` exists — a revert is being resolved.
     pub revert_in_progress: bool,
+    /// A `git rebase` is mid-flight (the `rebase-merge`/`rebase-apply`
+    /// bookkeeping directories exist in the git dir).
+    pub rebase_in_progress: bool,
+    /// A `git bisect` session is running (`BISECT_LOG` exists).
+    pub bisect_in_progress: bool,
 }
 
 impl StatusReport {
@@ -389,4 +394,17 @@ pub struct StashEntry {
     pub selector: String,
     pub message: String,
     pub date: String,
+}
+
+/// One entry of `git worktree list --porcelain`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeEntry {
+    /// Absolute path of the working tree.
+    pub path: String,
+    /// Short HEAD hash of the worktree (empty when bare).
+    pub head: String,
+    /// Short branch name (`main`), `None` when detached or bare.
+    pub branch: Option<String>,
+    pub bare: bool,
+    pub detached: bool,
 }

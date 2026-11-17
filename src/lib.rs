@@ -23,7 +23,7 @@ pub use core::{
     argument_completions, clone_repository, parse_request, ArgumentCompletion, Branch, BranchInfo,
     ChangedFile, CmdOutput, Commit, CommitDetail, CommitNode, DiffMode, EntryKind, GitClient,
     GitExecutor, GitRequest, Head, LogFilter, RemoteEntry, Rendered, RenderedSection,
-    RollbackLevel, StashAction, StashEntry, StatusEntry, StatusReport, TagEntry,
+    RollbackLevel, StashAction, StashEntry, StatusEntry, StatusReport, TagEntry, WorktreeEntry,
 };
 
 /// Builds a `git` invocation with the shared arguments every command uses.
@@ -145,9 +145,22 @@ pub fn repo_stamp(worktree_root: &str) -> Option<String> {
     let common_dir = resolve_common_dir(&git_dir);
 
     let mut stamp = String::with_capacity(256);
-    for file in ["index", "HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+    // Rebase/bisect bookkeeping: `rebase-merge`/`rebase-apply` are directories
+    // whose file set grows and shrinks as the rebase advances.
+    for file in [
+        "index",
+        "HEAD",
+        "FETCH_HEAD",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+        "BISECT_LOG",
+    ] {
         push_entry(&mut stamp, &git_dir.join(file));
     }
+    push_dir_stamp(&mut stamp, &git_dir.join("rebase-merge"));
+    push_dir_stamp(&mut stamp, &git_dir.join("rebase-apply"));
     push_entry(&mut stamp, &common_dir.join("packed-refs"));
     push_dir_stamp(&mut stamp, &common_dir.join("refs"));
     push_entry(&mut stamp, root);
